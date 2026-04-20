@@ -1,0 +1,83 @@
+.graph-wrap {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0a0c14;
+}
+
+.zone-selector {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px;
+  background: #1a1d27;
+  border-bottom: 1px solid #2a2d3a;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  min-height: 44px;
+}
+
+.zone-label {
+  font-size: 11px;
+  color: #7eb8f7;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.zb {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #2a2d3a;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+
+.zb:hover { background: #1e2535; color: #ccc; }
+.zb.active { background: #2a4a7f; color: #fff; border-color: #3a6abf; }
+
+.graph-canvas {
+  flex: 1;
+  width: 100%;
+  display: block;
+}
+
+.graph-legend {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  display: flex;
+  gap: 10px;
+  background: rgba(15, 17, 23, 0.92);
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid #2a2d3a;
+}
+
+.gl-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.gl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.graph-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #444;
+  pointer-events: none;
+}
