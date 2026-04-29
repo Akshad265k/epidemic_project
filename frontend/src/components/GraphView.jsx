@@ -1,237 +1,339 @@
-import React, { useEffect, useRef, useMemo } from 'react'
-import * as d3 from 'd3'
-import { useStore } from '../store'
-import './GraphView.css'
-
-const STATE_COLORS = {
-  S: '#ffffff',
-  E: '#f59e0b',
-  I: '#ef4444',
-  R: '#22c55e',
-  D: '#374151',
-}
-
-function dominantState(s) {
-  if (!s) return 'S'
-  const vals = [s.S, s.E, s.I, s.R, s.D]
-  const keys  = ['S', 'E', 'I', 'R', 'D']
-  return keys[vals.indexOf(Math.max(...vals))]
-}
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
+import * as d3 from 'd3';
+import { useStore } from '../store';
+import { getNodeColor } from '../utils/colors';
+import { buildHierarchy, getVisibleItems, aggregateClusterState } from '../utils/clustering';
 
 export default function GraphView() {
-  const { predictions, selectedDay, selectedZone, setSelectedZone, getNodeState } = useStore()
-  const canvasRef = useRef()
-  const simRef    = useRef()
-  const nodesRef  = useRef([])
-  const t = selectedDay - 1
+  const canvasRef = useRef(null);
+  const wrapperRef = useRef(null);
+  const simRef = useRef(null);
+  const nodesDataRef = useRef([]);
+  const transformRef = useRef(d3.zoomIdentity);
+  const hoveredRef = useRef(null);
 
-  const zoneList = useMemo(() => {
-    if (!predictions) return []
-    return [...new Set(predictions.nodes.map(n => n.zone))].sort((a, b) => a - b)
-  }, [predictions])
+  const nodes = useStore((s) => s.nodes);
+  const edgesSrc = useStore((s) => s.edgesSrc);
+  const edgesDst = useStore((s) => s.edgesDst);
+  const currentDay = useStore((s) => s.currentDay);
+  const currentClusterId = useStore((s) => s.currentClusterId);
+  const drillInto = useStore((s) => s.drillInto);
+  const breadcrumbs = useStore((s) => s.breadcrumbs);
+  const navigateTo = useStore((s) => s.navigateTo);
 
-  // Build nodes + edges for current zone/selection
-  const { simNodes, simEdges } = useMemo(() => {
-    if (!predictions) return { simNodes: [], simEdges: [] }
+  const [tooltip, setTooltip] = useState(null);
 
-    const filtered = selectedZone
-      ? predictions.nodes.filter(n => n.zone === selectedZone)
-      : predictions.nodes.slice(0, 400)
+  // Build hierarchy once
+  const hierarchy = useMemo(() => {
+    if (!nodes.length) return null;
+    return buildHierarchy(nodes, edgesSrc, edgesDst);
+  }, [nodes, edgesSrc, edgesDst]);
 
-    const idSet = new Set(filtered.map(n => n.id))
+  // Get visible items at current cluster level
+  const visibleItems = useMemo(() => {
+    if (!hierarchy) return [];
+    return getVisibleItems(hierarchy, currentClusterId);
+  }, [hierarchy, currentClusterId]);
 
-    // Build proximity-based edges using lat/lng distance
-    // Two nodes are connected if they are within a distance threshold
-    const edges = []
-    const arr   = filtered
-    const threshold = selectedZone ? 0.015 : 0.008
+  // Compute edges between visible items (clusters or nodes)
+  const visibleEdges = useMemo(() => {
+    if (!visibleItems.length || !edgesSrc.length) return [];
+    
+    const nodeToVisibleIndex = new Map();
+    visibleItems.forEach((item, idx) => {
+      item.nodeIds.forEach(nid => {
+        nodeToVisibleIndex.set(nid, idx);
+      });
+    });
 
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = i + 1; j < arr.length; j++) {
-        const dlat = arr[i].lat - arr[j].lat
-        const dlng = arr[i].lng - arr[j].lng
-        const dist  = Math.sqrt(dlat * dlat + dlng * dlng)
-        if (dist < threshold) {
-          edges.push({ source: i, target: j, strength: 1 - dist / threshold })
+    const seen = new Set();
+    const result = [];
+    for (let i = 0; i < edgesSrc.length; i++) {
+      const u = edgesSrc[i];
+      const v = edgesDst[i];
+      const idxU = nodeToVisibleIndex.get(u);
+      const idxV = nodeToVisibleIndex.get(v);
+      
+      if (idxU !== undefined && idxV !== undefined && idxU !== idxV) {
+        const pair = idxU < idxV ? `${idxU}_${idxV}` : `${idxV}_${idxU}`;
+        if (!seen.has(pair)) {
+          seen.add(pair);
+          result.push([idxU, idxV]);
         }
       }
     }
+    return result;
+  }, [visibleItems, edgesSrc, edgesDst]);
 
-    return {
-      simNodes: filtered.map((n, i) => ({ ...n, _idx: i })),
-      simEdges: edges,
-    }
-  }, [predictions, selectedZone])
+  // Draw loop
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const t = transformRef.current;
+    const day = useStore.getState().currentDay;
 
-  // Run D3 simulation
-  useEffect(() => {
-    if (!simNodes.length || !canvasRef.current) return
-    const canvas = canvasRef.current
-    const parent = canvas.parentElement
-    const W = parent.clientWidth
-    const H = parent.clientHeight - 44 // subtract zone bar height
-    canvas.width  = W
-    canvas.height = H
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.scale(t.k, t.k);
 
-    const ctx = canvas.getContext('2d')
-    if (simRef.current) simRef.current.stop()
-
-    const nodes = simNodes.map(n => ({
-      ...n,
-      x: W / 2 + (Math.random() - 0.5) * W * 0.6,
-      y: H / 2 + (Math.random() - 0.5) * H * 0.6,
-    }))
-
-    const links = simEdges.map(e => ({
-      source: nodes[e.source],
-      target: nodes[e.target],
-      strength: e.strength,
-    }))
-
-    nodesRef.current = nodes
-
-    const sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d => d._idx)
-        .distance(40).strength(d => d.strength * 0.4))
-      .force('charge', d3.forceManyBody().strength(selectedZone ? -60 : -25))
-      .force('center', d3.forceCenter(W / 2, H / 2))
-      .force('collision', d3.forceCollide(selectedZone ? 8 : 5))
-      .alphaDecay(0.02)
-
-    simRef.current = sim
-
-    function draw() {
-      ctx.clearRect(0, 0, W, H)
-
-      // Draw edges first
-      links.forEach(link => {
-        const src = link.source
-        const tgt = link.target
-        if (!src || !tgt || isNaN(src.x) || isNaN(tgt.x)) return
-        const state = getNodeState(src.id, t)
-        const dom   = dominantState(state)
-        const alpha = dom === 'I' ? 0.55 : dom === 'E' ? 0.35 : 0.12
-
-        ctx.beginPath()
-        ctx.moveTo(src.x, src.y)
-        ctx.lineTo(tgt.x, tgt.y)
-        ctx.strokeStyle = dom === 'I' ? `rgba(239,68,68,${alpha})`
-                        : dom === 'E' ? `rgba(245,158,11,${alpha})`
-                        : `rgba(100,116,139,${alpha})`
-        ctx.lineWidth = link.strength * 1.5
-        ctx.stroke()
-      })
-
-      // Draw nodes
-      nodes.forEach(n => {
-        if (isNaN(n.x) || isNaN(n.y)) return
-        const state = getNodeState(n.id, t)
-        const dom   = dominantState(state)
-        const color = STATE_COLORS[dom]
-        const r     = dom === 'I' ? 6 : dom === 'E' ? 5 : 4
-
-        // Glow for infected nodes
-        if (dom === 'I') {
-          ctx.beginPath()
-          ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2)
-          ctx.fillStyle = 'rgba(239,68,68,0.2)'
-          ctx.fill()
-        }
-
-        ctx.beginPath()
-        ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
-        ctx.fillStyle = color
-        ctx.globalAlpha = 0.9
-        ctx.fill()
-
-        // Outline
-        ctx.strokeStyle = 'rgba(0,0,0,0.4)'
-        ctx.lineWidth = 0.5
-        ctx.stroke()
-      })
-      ctx.globalAlpha = 1
+    const simNodes = nodesDataRef.current;
+    
+    // Draw edges
+    const isNodeLevel = simNodes.length > 0 && simNodes[0]._type === 'node';
+    ctx.strokeStyle = isNodeLevel ? 'rgba(120,120,160,0.3)' : 'rgba(100,100,140,0.15)';
+    ctx.lineWidth = isNodeLevel ? 1.2 : 0.8;
+    for (const [srcIdx, dstIdx] of visibleEdges) {
+      const u = simNodes[srcIdx];
+      const v = simNodes[dstIdx];
+      if (!u || !v) continue;
+      
+      ctx.beginPath();
+      ctx.moveTo(u.x, u.y);
+      ctx.lineTo(v.x, v.y);
+      ctx.stroke();
     }
 
-    sim.on('tick', draw)
+    // Draw nodes
+    for (const n of simNodes) {
+      const state = n._type === 'node'
+        ? nodes[n._origId]?.days?.[day]
+        : aggregateClusterState(n._nodeIds, nodes, day);
 
-    return () => sim.stop()
-  }, [simNodes, simEdges])
+      const color = getNodeColor(state);
+      const r = n._radius;
 
-  // Redraw on day change (don't restart sim, just redraw)
-  useEffect(() => {
-    if (!nodesRef.current.length || !canvasRef.current) return
-    const canvas = canvasRef.current
-    const W = canvas.width
-    const H = canvas.height
-    const ctx = canvas.getContext('2d')
-    const nodes = nodesRef.current
+      // Glow
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r + 3, 0, Math.PI * 2);
+      ctx.fillStyle = color.replace('rgb', 'rgba').replace(')', ',0.15)');
+      ctx.fill();
 
-    ctx.clearRect(0, 0, W, H)
-    nodes.forEach(n => {
-      if (isNaN(n.x) || isNaN(n.y)) return
-      const state = getNodeState(n.id, t)
-      const dom   = dominantState(state)
-      const color = STATE_COLORS[dom]
-      const r     = dom === 'I' ? 6 : dom === 'E' ? 5 : 4
+      // Node
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
 
-      if (dom === 'I') {
-        ctx.beginPath()
-        ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2)
-        ctx.fillStyle = 'rgba(239,68,68,0.2)'
-        ctx.fill()
+      // Border
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Cluster count label
+      if (n._type === 'cluster' && n._count > 1) {
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.font = `bold ${Math.max(8, r * 0.6)}px Inter`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(n._count > 999 ? `${(n._count / 1000).toFixed(1)}k` : String(n._count), n.x, n.y);
       }
+    }
 
-      ctx.beginPath()
-      ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
-      ctx.fillStyle = color
-      ctx.globalAlpha = 0.9
-      ctx.fill()
-      ctx.strokeStyle = 'rgba(0,0,0,0.4)'
-      ctx.lineWidth = 0.5
-      ctx.stroke()
-    })
-    ctx.globalAlpha = 1
-  }, [selectedDay])
+    // Highlight hovered
+    const hovered = hoveredRef.current;
+    if (hovered) {
+      ctx.beginPath();
+      ctx.arc(hovered.x, hovered.y, hovered._radius + 5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
-  if (!predictions) return null
+    ctx.restore();
+  }, [nodes, visibleEdges]);
+
+  // Setup simulation and interactions
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrapper = wrapperRef.current;
+    if (!canvas || !wrapper || !visibleItems.length) return;
+
+    const w = wrapper.clientWidth;
+    const h = wrapper.clientHeight;
+    canvas.width = w;
+    canvas.height = h;
+
+    const simNodes = visibleItems.map((item) => {
+      const isNode = item.type === 'node' && item.count === 1;
+      const count = item.count || 1;
+      const radius = isNode ? 5 : Math.max(7, Math.min(32, Math.sqrt(count) * 1.8));
+      return {
+        x: w / 2 + (Math.random() - 0.5) * w * 0.6,
+        y: h / 2 + (Math.random() - 0.5) * h * 0.6,
+        _origId: isNode ? (item.nodeIds?.[0] ?? item.id) : item.id,
+        _type: isNode ? 'node' : 'cluster',
+        _count: count,
+        _nodeIds: item.nodeIds || [],
+        _radius: radius,
+        _item: item,
+      };
+    });
+    nodesDataRef.current = simNodes;
+
+    // Force simulation
+    if (simRef.current) simRef.current.stop();
+    const sim = d3.forceSimulation(simNodes)
+      .force('center', d3.forceCenter(w / 2, h / 2))
+      .force('charge', d3.forceManyBody().strength(-100))
+      .force('collision', d3.forceCollide().radius(d => d._radius + 5))
+      .force('x', d3.forceX(w / 2).strength(0.05))
+      .force('y', d3.forceY(h / 2).strength(0.05))
+      .alphaDecay(0.05)
+      .on('tick', draw);
+    simRef.current = sim;
+
+    // Zoom
+    const zoom = d3.zoom()
+      .scaleExtent([0.2, 8])
+      .on('zoom', (e) => {
+        transformRef.current = e.transform;
+        draw();
+      });
+    const zoomSelection = d3.select(canvas);
+    zoomSelection.call(zoom);
+
+    // Initial "zoom in" effect when entering a level
+    zoomSelection.transition().duration(800)
+      .call(zoom.transform, d3.zoomIdentity);
+
+    // Hit detection
+    const findNode = (mx, my) => {
+      const t = transformRef.current;
+      const px = (mx - t.x) / t.k;
+      const py = (my - t.y) / t.k;
+      for (let i = simNodes.length - 1; i >= 0; i--) {
+        const n = simNodes[i];
+        const dx = px - n.x, dy = py - n.y;
+        if (dx * dx + dy * dy < (n._radius + 6) ** 2) return n;
+      }
+      return null;
+    };
+
+    const handleMouseMove = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const found = findNode(mx, my);
+      hoveredRef.current = found;
+      canvas.style.cursor = found ? 'pointer' : 'grab';
+
+      if (found) {
+        const day = useStore.getState().currentDay;
+        const state = found._type === 'node'
+          ? nodes[found._origId]?.days?.[day]
+          : aggregateClusterState(found._nodeIds, nodes, day);
+
+        setTooltip({
+          x: e.clientX, y: e.clientY,
+          type: found._type,
+          count: found._count,
+          id: found._origId,
+          state,
+        });
+      } else {
+        setTooltip(null);
+      }
+      draw();
+    };
+
+    const handleClick = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const found = findNode(e.clientX - rect.left, e.clientY - rect.top);
+      if (found && found._type === 'cluster' && found._item.children) {
+        // Zoom transition effect
+        const t = transformRef.current;
+        const targetScale = t.k * 3;
+        const targetX = w / 2 - found.x * targetScale;
+        const targetY = h / 2 - found.y * targetScale;
+        
+        zoomSelection.transition().duration(700)
+          .call(zoom.transform, d3.zoomIdentity.translate(targetX, targetY).scale(targetScale))
+          .on('end', () => {
+            drillInto(found._item.id, `Cluster (${found._count})`);
+            setTooltip(null);
+          });
+      }
+    };
+
+    canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('click', handleClick);
+    canvas.addEventListener('mouseleave', () => { hoveredRef.current = null; setTooltip(null); draw(); });
+
+    return () => {
+      sim.stop();
+      canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('click', handleClick);
+      d3.select(canvas).on('.zoom', null);
+    };
+  }, [visibleItems, draw, drillInto, nodes]);
+
+  // Redraw when day changes
+  useEffect(() => { draw(); }, [currentDay, draw]);
 
   return (
-    <div className="graph-wrap">
-      <div className="zone-selector">
-        <span className="zone-label">Zone:</span>
-        <button
-          className={!selectedZone ? 'zb active' : 'zb'}
-          onClick={() => setSelectedZone(null)}
-        >
-          All
-        </button>
-        {zoneList.map(z => (
-          <button
-            key={z}
-            className={selectedZone === z ? 'zb active' : 'zb'}
-            onClick={() => setSelectedZone(selectedZone === z ? null : z)}
-          >
-            {z}
-          </button>
-        ))}
-      </div>
-
-      <canvas ref={canvasRef} className="graph-canvas" />
-
-      <div className="graph-legend">
-        {Object.entries(STATE_COLORS).map(([k, c]) => (
-          <span key={k} className="gl-item">
-            <span className="gl-dot" style={{ background: c,
-              border: k === 'S' ? '1px solid #555' : 'none' }} />
-            {k}
+    <div ref={wrapperRef} className="w-full h-full relative">
+      {/* Breadcrumbs */}
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-1 glass rounded-xl px-3 py-1.5">
+        {breadcrumbs.map((bc, i) => (
+          <span key={i} className="flex items-center gap-1">
+            {i > 0 && <span className="text-[var(--color-text-muted)] text-xs">›</span>}
+            <button
+              onClick={() => navigateTo(i)}
+              className={`text-xs px-1.5 py-0.5 rounded-md transition-colors
+                ${i === breadcrumbs.length - 1
+                  ? 'text-[var(--color-accent-light)] font-semibold'
+                  : 'text-[var(--color-text-secondary)] hover:text-white'}`}
+            >
+              {bc.label}
+            </button>
           </span>
         ))}
       </div>
 
-      {!selectedZone && (
-        <div className="graph-hint">Select a zone above to see individual connections</div>
+      <canvas ref={canvasRef} className="w-full h-full" />
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div
+          className="fixed z-50 glass rounded-xl p-3 pointer-events-none max-w-xs"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+        >
+          {tooltip.type === 'node' ? (
+            <div>
+              <div className="text-xs text-[var(--color-text-muted)] mb-1">Node #{tooltip.id}</div>
+              <div className="grid grid-cols-5 gap-2 text-center">
+                {['S', 'E', 'I', 'R', 'D'].map((k) => (
+                  <div key={k}>
+                    <div className="text-[10px] text-[var(--color-text-muted)]">{k}</div>
+                    <div className="text-xs font-bold font-mono">
+                      {((tooltip.state?.[k] || 0) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-xs text-[var(--color-text-muted)] mb-1">
+                Cluster · {tooltip.count.toLocaleString()} nodes
+              </div>
+              <div className="grid grid-cols-5 gap-2 text-center">
+                {['S', 'E', 'I', 'R', 'D'].map((k) => (
+                  <div key={k}>
+                    <div className="text-[10px] text-[var(--color-text-muted)]">{k}</div>
+                    <div className="text-xs font-bold font-mono">
+                      {((tooltip.state?.[k] || 0) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-[10px] text-indigo-400 mt-1.5">Click to drill down →</div>
+            </div>
+          )}
+        </div>
       )}
     </div>
-  )
+  );
 }
-

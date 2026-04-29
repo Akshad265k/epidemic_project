@@ -1,0 +1,8 @@
+{
+  "graph_id": "266920d0",
+  "interventions": {
+    "mask_mandate": 50.0,
+    "school_closure": true,
+    "lockdown": false
+  }
+}

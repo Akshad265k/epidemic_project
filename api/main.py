@@ -2,118 +2,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.data import Data
+from torchdiffeq import odeint_adjoint as odeint
 import pandas as pd
 import numpy as np
-import json, gzip, io, os, uuid
+import uuid
+import os
+import io
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict
+from fastapi.responses import ORJSONResponse
+from typing import Dict, Optional
 
-# ── Paths ──────────────────────────────────────────────────────────────────
-BASE      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.path.join(BASE, 'model', 'tgn_best.pt')
-GRAPH_PATH = os.path.join(BASE, 'data',  'graph.pt')
-POP_PATH   = os.path.join(BASE, 'data',  'population.parquet')
+app = FastAPI()
 
-device = torch.device('cpu')
+# Enable CORS for your Vite frontend
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ── Model definition (must match training exactly) ─────────────────────────
-class NodeMemory(nn.Module):
-    def __init__(self, n_nodes, mem_dim):
-        super().__init__()
-        self.n_nodes = n_nodes
-        self.mem_dim = mem_dim
-        self.register_buffer('memory', torch.zeros(n_nodes, mem_dim))
+# Configuration
+MODEL_PATH = "model/tgn_best.pt"
+GRAPHS_DIR = "graphs"
+device = torch.device("cpu")
 
-    def get(self):       return self.memory
-    def reset(self):     self.memory.zero_()
-    def update(self, m): self.memory = m.detach()
-
-
-class EpidemicTGN(nn.Module):
-    def __init__(self, n_nodes, node_feat_dim=9, mem_dim=32, state_dim=5):
-        super().__init__()
-        self.n_nodes   = n_nodes
-        self.mem_dim   = mem_dim
-        self.state_dim = state_dim
-        self.memory    = NodeMemory(n_nodes, mem_dim)
-
-        msg_in = mem_dim * 2 + 1 + state_dim
-        self.msg_fn = nn.Sequential(
-            nn.Linear(msg_in, 64), nn.ReLU(), nn.Linear(64, mem_dim)
-        )
-        self.mem_updater = nn.GRUCell(mem_dim, mem_dim)
-
-        gat_in = mem_dim + node_feat_dim + state_dim
-        self.gat1  = GATv2Conv(gat_in, 32, heads=2, concat=False,
-                               edge_dim=1, dropout=0.0, add_self_loops=True)
-        self.gat2  = GATv2Conv(32, 32, heads=2, concat=False,
-                               edge_dim=1, dropout=0.0, add_self_loops=True)
-        self.norm1 = nn.LayerNorm(32)
-        self.norm2 = nn.LayerNorm(32)
-        self.predictor = nn.Sequential(
-            nn.Linear(32, 64), nn.LayerNorm(64), nn.ReLU(),
-            nn.Dropout(0.0), nn.Linear(64, state_dim)
-        )
-
-    def _step(self, x_state, node_feats, edge_index, edge_attr):
-        x_state    = x_state.float()
-        node_feats = node_feats.float()
-        edge_attr  = edge_attr.float()
-        src, dst   = edge_index[0], edge_index[1]
-        mem        = self.memory.get().float()
-
-        e_w = edge_attr.squeeze(1) if edge_attr.dim() == 2 else edge_attr
-        msg_input = torch.cat([mem[src], mem[dst],
-                                e_w.unsqueeze(1), x_state[src]], dim=-1)
-        msgs = self.msg_fn(msg_input).float()
-
-        agg = torch.zeros(self.n_nodes, self.mem_dim, dtype=torch.float32)
-        idx = dst.unsqueeze(1).expand(dst.shape[0], self.mem_dim)
-        agg.scatter_add_(0, idx, msgs)
-
-        new_mem = self.mem_updater(agg, mem)
-        self.memory.update(new_mem)
-
-        e_2d = edge_attr if edge_attr.dim() == 2 else edge_attr.unsqueeze(1)
-        h = torch.cat([new_mem, node_feats, x_state], dim=-1)
-        h = self.norm1(F.elu(self.gat1(h, edge_index, e_2d)))
-        h = self.norm2(F.elu(self.gat2(h, edge_index, e_2d)))
-        return F.softmax(self.predictor(h), dim=-1)
-
-    @torch.no_grad()
-    def rollout(self, x0, node_feats, edge_index, edge_attr, n_days=30):
-        self.memory.reset()
-        preds = []
-        x = x0.float()
-        for _ in range(n_days):
-            x = self._step(x, node_feats, edge_index, edge_attr)
-            preds.append(x)
-        return torch.stack(preds, dim=0)  # (30, N, 5)
-
-
-# ── Load graph and model once at startup ───────────────────────────────────
-print('Loading graph...')
-graph      = torch.load(GRAPH_PATH, map_location=device)
-edge_index = graph.edge_index
-edge_attr  = graph.edge_attr
-node_feats = graph.x
-node_pos   = graph.pos.numpy()    # (N, 2) lat/lng
-node_zone  = graph.zone.numpy()   # (N,)
-N          = graph.num_nodes
-
-df_pop = pd.read_parquet(POP_PATH)
-
-print('Loading model...')
-model = EpidemicTGN(n_nodes=N).to(device)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-model.eval()
-print(f'Ready. N={N} nodes.')
-
-# ── Zone centroids (must match what you used in data generation) ───────────
 ZONE_CENTROIDS = {
     1:(18.5204,73.8567), 2:(18.5314,73.8446), 3:(18.5089,73.8741),
     4:(18.4968,73.8631), 5:(18.5421,73.8789), 6:(18.5612,73.8234),
@@ -124,125 +41,265 @@ ZONE_CENTROIDS = {
     19:(18.4623,73.8678),20:(18.5234,73.8901),
 }
 
-# ── In-memory store for uploaded graphs ───────────────────────────────────
-graphs_store: Dict[str, torch.Tensor] = {}
+# --- MODEL DEFINITION ---
+class SEIRDDerivative(nn.Module):
+    def __init__(self, node_feat_dim=9, state_dim=5, hidden_dim=32):
+        super().__init__()
+        self.state_dim    = state_dim
+        self.node_feat_dim = node_feat_dim
+        gat_in = state_dim + node_feat_dim
+        self.gat1 = GATv2Conv(gat_in, hidden_dim, heads=1, concat=False,
+                              edge_dim=1, dropout=0.0, add_self_loops=True)
+        self.gat2 = GATv2Conv(hidden_dim, hidden_dim, heads=1, concat=False,
+                              edge_dim=1, dropout=0.0, add_self_loops=True)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.deriv_head = nn.Sequential(
+            nn.Linear(hidden_dim + state_dim + node_feat_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, state_dim)
+        )
 
-# ── FastAPI app ────────────────────────────────────────────────────────────
-app = FastAPI()
-app.add_middleware(CORSMiddleware,
-                   allow_origins=["*"],
-                   allow_methods=["*"],
-                   allow_headers=["*"])
+    def forward(self, t, x):
+        x = x.float()
+        node_feats = self._node_feats
+        edge_index = self._edge_index
+        edge_attr  = self._edge_attr
+        h = torch.cat([x, node_feats], dim=-1)
+        h = self.norm1(F.elu(self.gat1(h, edge_index, edge_attr)))
+        h = self.norm2(F.elu(self.gat2(h, edge_index, edge_attr)))
+        h_full = torch.cat([h, x, node_feats], dim=-1)
+        dxdt   = self.deriv_head(h_full)
+        dxdt_constrained = torch.stack([
+            -F.softplus(dxdt[:, 0]),
+             dxdt[:, 1],
+             dxdt[:, 2],
+             dxdt[:, 3],
+             F.softplus(dxdt[:, 4]),
+        ], dim=-1)
+        return dxdt_constrained
 
+    def set_graph(self, node_feats, edge_index, edge_attr):
+        self._node_feats  = node_feats.float()
+        self._edge_index  = edge_index
+        self._edge_attr   = edge_attr.float()
+
+class EpidemicNODE(nn.Module):
+    def __init__(self, node_feat_dim=9, state_dim=5, hidden_dim=64):
+        super().__init__()
+        self.ode_func = SEIRDDerivative(node_feat_dim, state_dim, hidden_dim)
+
+    def forward(self, x0, node_feats, edge_index, edge_attr, t_span):
+        self.ode_func.set_graph(node_feats, edge_index, edge_attr)
+        trajectory = odeint(
+            self.ode_func,
+            x0.float(),
+            t_span.to(x0.device),
+            method='rk4',
+            options={'step_size': 0.5}
+        )
+        trajectory = trajectory.clamp(min=0.0)
+        row_sums   = trajectory.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        trajectory = trajectory / row_sums
+        return trajectory
+        
+    def rollout(self, x0, node_feats, edge_index, edge_attr, n_days=30):
+        t_span = torch.arange(0, n_days + 1).float().to(x0.device)
+        return self.forward(x0, node_feats, edge_index, edge_attr, t_span)[1:]
+
+# --- LOAD GRAPHS ---
+print("Loading graphs...")
+graphs = {}
+for fname in os.listdir(GRAPHS_DIR):
+    if not fname.endswith(".pt"): continue
+    seed = int(fname.replace("graph_seed","").replace(".pt",""))
+    g = torch.load(os.path.join(GRAPHS_DIR, fname), map_location=device, weights_only=False)
+    graphs[seed] = {
+        "edge_index": g.edge_index,
+        "edge_attr":  g.edge_attr,
+        "node_feats": g.x,
+        "pos":        g.pos,
+        "zone":       g.zone,
+        "N":          g.num_nodes,
+    }
+    print(f"  Graph seed={seed}: N={g.num_nodes}")
+
+# Default inference graph (largest one)
+default_seed = max(graphs.keys(), key=lambda s: graphs[s]["N"])
+print(f"Default inference graph: seed={default_seed}, N={graphs[default_seed]['N']}")
+
+# --- LOAD MODEL ---
+print("Loading model...")
+model = EpidemicNODE()
+try:
+    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+    # Check if it is a checkpoint or just weights
+    if "model" in state_dict:
+        model.load_state_dict(state_dict["model"])
+    else:
+        model.load_state_dict(state_dict)
+    print("Model loaded successfully.")
+except Exception as e:
+    print(f"Error loading model: {e}")
+
+model.eval()
+
+# In-memory storage for seeded initial states
+store: Dict[str, torch.Tensor] = {}
+
+class Interventions(BaseModel):
+    mask_mandate: float = 0.0
+    school_closure: bool = False
+    lockdown: bool = False
 
 class PredictRequest(BaseModel):
     graph_id: str
-    interventions: Optional[dict] = {}
+    interventions: Optional[Interventions]
 
-
+# --- ENDPOINTS ---
 @app.get("/health")
 def health():
-    return {"status": "ok", "nodes": N}
-
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "graphs_available": list(graphs.keys()),
+        "default_seed": default_seed
+    }
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
-    contents = await file.read()
+async def upload_graph(file: UploadFile = File(...)):
     try:
+        contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode()))
+        
+        g = graphs[default_seed]
+        N = g["N"]
+        x0 = torch.zeros(N, 5)
+        x0[:, 0] = 1.0 # All susceptible
+        
+        # Seed infections from CSV
+        n_seeded = 0
+        if "node_id" in df.columns and "infected" in df.columns:
+            for _, row in df[df["infected"] == 1].iterrows():
+                nid = int(row["node_id"])
+                if nid < N:
+                    x0[nid, 0] = 0.0
+                    x0[nid, 2] = 1.0 # Set to Infected
+                    n_seeded += 1
+        
+        graph_id = str(uuid.uuid4())[:8]
+        store[graph_id] = x0
+        print(f"Uploaded graph {graph_id}, seeded {n_seeded} infections.")
+        
+        return {
+            "graph_id": graph_id,
+            "n_infected": n_seeded,
+            "n_nodes": N
+        }
     except Exception as e:
-        raise HTTPException(400, f"Could not parse CSV: {e}")
+        print(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    x0 = torch.zeros(N, 5)
-    x0[:, 0] = 1.0  # all susceptible
-
-    if 'node_id' in df.columns and 'infected' in df.columns:
-        infected_ids = df[df['infected'] == 1]['node_id'].values
-        for nid in infected_ids:
-            if int(nid) < N:
-                x0[int(nid), 0] = 0.0
-                x0[int(nid), 2] = 1.0
-
-    gid = str(uuid.uuid4())[:8]
-    graphs_store[gid] = x0
-
-    n_infected = int((x0[:, 2] > 0).sum())
-    return {"graph_id": gid, "n_infected": n_infected, "n_nodes": N}
-
-
-@app.post("/api/predict")
-def predict(req: PredictRequest):
-    if req.graph_id not in graphs_store:
-        raise HTTPException(404, "graph_id not found. Call /api/upload first.")
-
-    x0 = graphs_store[req.graph_id]
-
-    # Apply interventions
-    ea = edge_attr.clone()
-    iv = req.interventions or {}
-    if iv.get("mask_mandate"):
-        compliance = float(iv["mask_mandate"]) / 100.0
-        ea = ea * (1 - 0.5 * compliance)
-    if iv.get("school_closure"):
-        ea = ea * 0.7
-    if iv.get("lockdown"):
-        ea = ea * 0.4
-
-    # Run MC dropout for uncertainty (10 passes — fast on CPU)
-    N_MC  = 10
-    preds = []
-    model.train()  # dropout active
-    with torch.no_grad():
-        for _ in range(N_MC):
-            p = model.rollout(x0, node_feats, edge_index, ea, n_days=30)
-            preds.append(p.numpy())
-    model.eval()
-
-    preds_arr = np.stack(preds, axis=0)    # (10, 30, N, 5)
-    mean_pred = preds_arr.mean(axis=0)     # (30, N, 5)
-    std_pred  = preds_arr.std(axis=0)      # (30, N, 5)
-
-    # Build node-level response
-    nodes_out = []
-    for i in range(N):
-        nodes_out.append({
-            "id":   i,
-            "lat":  round(float(node_pos[i, 0]), 6),
-            "lng":  round(float(node_pos[i, 1]), 6),
-            "zone": int(node_zone[i]),
-            "days": [
+@app.post("/api/predict", response_class=ORJSONResponse)
+async def predict(req: PredictRequest):
+    if req.graph_id not in store:
+        raise HTTPException(status_code=404, detail="graph_id not found")
+        
+    try:
+        print(f"Starting prediction for {req.graph_id}...")
+        g = graphs[default_seed]
+        x0 = store[req.graph_id]
+        ea = g["edge_attr"].clone()
+        
+        # Apply interventions
+        iv = req.interventions
+        if iv:
+            if iv.mask_mandate > 0:
+                ea = ea * (1 - 0.5 * iv.mask_mandate / 100.0)
+            if iv.school_closure:
+                ea = ea * 0.7
+            if iv.lockdown:
+                ea = ea * 0.4
+                
+        # Run rollout with MC Dropout for uncertainty
+        N_MC = 2
+        preds = []
+        model.train() # Enable dropout for MC
+        with torch.no_grad():
+            for i in range(N_MC):
+                print(f"  MC rollout {i+1}/{N_MC}...")
+                p = model.rollout(x0, g["node_feats"], g["edge_index"], ea, n_days=30)
+                preds.append(p.numpy())
+        model.eval()
+        
+        preds_arr = np.stack(preds, axis=0) # (MC, 30, N, 5)
+        mean_pred = np.round(preds_arr.mean(axis=0), 4)
+        std_pred  = np.round(preds_arr.std(axis=0), 4)
+        
+        node_pos = np.round(g["pos"].numpy(), 6)
+        node_zone = g["zone"].numpy()
+        N = g["N"]
+        
+        output_nodes = []
+        print("Formatting results...")
+        for i in range(N):
+            # Extract slices for this node to avoid repeated indexing
+            node_mean = mean_pred[:, i, :]
+            node_std = std_pred[:, i, 2]
+            
+            day_history = [
                 {
-                    "S": round(float(mean_pred[t, i, 0]), 4),
-                    "E": round(float(mean_pred[t, i, 1]), 4),
-                    "I": round(float(mean_pred[t, i, 2]), 4),
-                    "R": round(float(mean_pred[t, i, 3]), 4),
-                    "D": round(float(mean_pred[t, i, 4]), 4),
-                    "u": round(float(std_pred[t,  i, 2]), 4),
-                }
-                for t in range(30)
+                    "S": float(node_mean[t, 0]), 
+                    "E": float(node_mean[t, 1]),
+                    "I": float(node_mean[t, 2]),
+                    "R": float(node_mean[t, 3]),
+                    "D": float(node_mean[t, 4]),
+                    "u": float(node_std[t])
+                } for t in range(30)
             ]
-        })
+            
+            output_nodes.append({
+                "id": i,
+                "lat": float(node_pos[i, 0]),
+                "lng": float(node_pos[i, 1]),
+                "zone": int(node_zone[i]),
+                "days": day_history
+            })
 
-    # Zone summaries
-    zones_out = []
-    for z in range(1, 21):
-        mask = node_zone == z
-        if not mask.any():
-            continue
-        zone_I = mean_pred[:, mask, 2].mean(axis=1)  # (30,)
-        clat, clng = ZONE_CENTROIDS.get(z, (0.0, 0.0))
-        zones_out.append({
-            "zone":     z,
-            "clat":     clat,
-            "clng":     clng,
-            "severity": [round(float(v), 4) for v in zone_I],
-            "peak_day": int(zone_I.argmax()) + 1,
-        })
+        zones_out = []
+        for z in range(1, 21):
+            mask = (node_zone == z)
+            if not mask.any(): continue
+            
+            zone_mean = mean_pred[:, mask, :].mean(axis=1)  # (30, 5)
+            zone_I = np.round(zone_mean[:, 2], 4)
+            clat, clng = ZONE_CENTROIDS.get(z, (0.0, 0.0))
+            zones_out.append({
+                "zone": z,
+                "clat": clat,
+                "clng": clng,
+                "severity": [float(v) for v in zone_I],
+                "peak_day": int(zone_I.argmax()) + 1,
+                "days": [
+                    {"S": float(zone_mean[t, 0]), "E": float(zone_mean[t, 1]),
+                     "I": float(zone_mean[t, 2]), "R": float(zone_mean[t, 3]),
+                     "D": float(zone_mean[t, 4])}
+                    for t in range(30)
+                ]
+            })
 
-    result     = json.dumps({"nodes": nodes_out, "zones": zones_out})
-    compressed = gzip.compress(result.encode())
-    return Response(
-        content=compressed,
-        media_type="application/json",
-        headers={"Content-Encoding": "gzip"}
-    )
+        # Edge data for graph view
+        ei = g["edge_index"].numpy()
+        edges_src = ei[0].tolist()
+        edges_dst = ei[1].tolist()
+
+        print("Prediction complete.")
+        return {"nodes": output_nodes, "zones": zones_out,
+                "edges_src": edges_src, "edges_dst": edges_dst}
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

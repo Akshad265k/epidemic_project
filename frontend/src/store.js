@@ -1,76 +1,91 @@
-import { create } from 'zustand'
+import { create } from 'zustand';
+import { uploadDataset, runPrediction } from './utils/api';
 
 export const useStore = create((set, get) => ({
-  // API state
-  graphId:     null,
-  predictions: null,   // full response {nodes, zones}
-  loading:     false,
-  error:       null,
+  // --- View ---
+  activeView: 'upload', // 'upload' | 'graph' | 'map'
+  setActiveView: (v) => set({ activeView: v }),
 
-  // UI state
-  selectedDay:  1,
-  selectedZone: null,
-  view:         'map',   // 'map' | 'graph'
+  // --- Upload ---
+  file: null,
+  graphId: null,
+  nNodes: 0,
+  nInfected: 0,
+  setFile: (f) => set({ file: f }),
+
+  // --- Interventions ---
   interventions: { mask_mandate: 0, school_closure: false, lockdown: false },
+  setInterventions: (iv) => set({ interventions: { ...get().interventions, ...iv } }),
 
-  // Flat Float32Array for fast day scrubbing: [node][day][state]
-  // shape: N * 30 * 6  (S,E,I,R,D,u)
-  stateBuffer: null,
+  // --- Prediction Data ---
+  nodes: [],
+  zones: [],
+  edgesSrc: [],
+  edgesDst: [],
+  isLoading: false,
+  error: null,
 
-  setSelectedDay:  (d) => set({ selectedDay: d }),
-  setSelectedZone: (z) => set({ selectedZone: z }),
-  setView:         (v) => set({ view: v }),
-  setIntervention: (k, v) => set(s => ({
-    interventions: { ...s.interventions, [k]: v }
+  // --- Timeline ---
+  currentDay: 0,
+  isPlaying: false,
+  playbackSpeed: 1,
+  setCurrentDay: (d) => set({ currentDay: d }),
+  setIsPlaying: (p) => set({ isPlaying: p }),
+  togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
+  setPlaybackSpeed: (sp) => set({ playbackSpeed: sp }),
+
+  // --- Graph Navigation ---
+  currentClusterId: null,
+  breadcrumbs: [{ id: null, label: 'All Nodes' }],
+  drillInto: (clusterId, label) => set((s) => ({
+    currentClusterId: clusterId,
+    breadcrumbs: [...s.breadcrumbs, { id: clusterId, label }],
   })),
+  navigateTo: (index) => set((s) => ({
+    currentClusterId: s.breadcrumbs[index].id,
+    breadcrumbs: s.breadcrumbs.slice(0, index + 1),
+  })),
+  resetNavigation: () => set({
+    currentClusterId: null,
+    breadcrumbs: [{ id: null, label: 'All Nodes' }],
+  }),
 
-  uploadAndPredict: async (file, interventions) => {
-    set({ loading: true, error: null })
-    const API = import.meta.env.VITE_API_URL
+  // --- Actions ---
+  uploadAndPredict: async () => {
+    const { file, interventions } = get();
+    if (!file) return;
+
+    set({ isLoading: true, error: null, activeView: 'graph' });
 
     try {
-      // Upload
-      const form = new FormData()
-      form.append('file', file)
-      const r1 = await fetch(`${API}/api/upload`, { method: 'POST', body: form })
-      const { graph_id } = await r1.json()
+      // Step 1: Upload
+      const uploadResult = await uploadDataset(file);
+      set({
+        graphId: uploadResult.graph_id,
+        nNodes: uploadResult.n_nodes,
+        nInfected: uploadResult.n_infected,
+      });
 
-      // Predict
-      const r2 = await fetch(`${API}/api/predict`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ graph_id, interventions })
-      })
-      const data = await r2.json()
-
-      // Build flat buffer for O(1) day scrubbing
-      const N      = data.nodes.length
-      const buffer = new Float32Array(N * 30 * 6)
-      data.nodes.forEach((node, i) => {
-        node.days.forEach((d, t) => {
-          const off = i * 30 * 6 + t * 6
-          buffer[off]   = d.S
-          buffer[off+1] = d.E
-          buffer[off+2] = d.I
-          buffer[off+3] = d.R
-          buffer[off+4] = d.D
-          buffer[off+5] = d.u
-        })
-      })
-
-      set({ predictions: data, stateBuffer: buffer, graphId: graph_id,
-            loading: false, selectedDay: 1 })
-    } catch (e) {
-      set({ error: e.message, loading: false })
+      // Step 2: Predict
+      const prediction = await runPrediction(uploadResult.graph_id, interventions);
+      set({
+        nodes: prediction.nodes,
+        zones: prediction.zones,
+        edgesSrc: prediction.edges_src || [],
+        edgesDst: prediction.edges_dst || [],
+        isLoading: false,
+        currentDay: 0,
+        isPlaying: false,
+        currentClusterId: null,
+        breadcrumbs: [{ id: null, label: 'All Nodes' }],
+      });
+    } catch (err) {
+      console.error('Upload/Predict error:', err);
+      set({
+        isLoading: false,
+        error: err?.response?.data?.detail || err.message || 'Prediction failed',
+        activeView: 'upload',
+      });
     }
   },
-
-  // Get state for node i at day t (0-indexed)
-  getNodeState: (i, t) => {
-    const buf = get().stateBuffer
-    if (!buf) return null
-    const off = i * 30 * 6 + t * 6
-    return { S: buf[off], E: buf[off+1], I: buf[off+2],
-             R: buf[off+3], D: buf[off+4], u: buf[off+5] }
-  },
-}))
+}));
