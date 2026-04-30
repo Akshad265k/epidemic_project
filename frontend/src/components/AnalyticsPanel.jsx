@@ -156,7 +156,7 @@ export default function AnalyticsPanel() {
         <div className="space-y-4">
           <div className="flex justify-between items-center px-1">
             <h4 className="text-[10px] font-black text-white uppercase tracking-wider">
-              {isComparing ? 'Scenario Comparison (Global I)' : 'Infection Trajectory'}
+              {isComparing ? 'Infection Comparison' : 'Infection Trajectory'}
             </h4>
             <div className="flex gap-4">
                <div className="flex items-center gap-1.5">
