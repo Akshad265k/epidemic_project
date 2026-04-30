@@ -8,7 +8,7 @@ const SEIRD_COLORS = {
   E: [245, 158, 11],   // amber
   I: [239, 68, 68],    // red
   R: [59, 130, 246],   // blue
-  D: [20, 20, 30],     // near-black
+  D: [255, 255, 255],  // white
 };
 
 /**
@@ -20,8 +20,8 @@ export function getNodeColor(dayState) {
 
   const { S = 0, E = 0, I = 0, R = 0, D = 0 } = dayState;
 
-  // If dead > 0.5, return dark
-  if (D > 0.5) return `rgb(20, 20, 30)`;
+  // If dead > 0.5, return white
+  if (D > 0.5) return `rgb(255, 255, 255)`;
 
   // Weighted blend
   const r = S * SEIRD_COLORS.S[0] + E * SEIRD_COLORS.E[0] + I * SEIRD_COLORS.I[0] + R * SEIRD_COLORS.R[0] + D * SEIRD_COLORS.D[0];
@@ -37,7 +37,7 @@ export function getNodeColor(dayState) {
 export function getNodeColorHex(dayState) {
   if (!dayState) return '#64648c';
   const { S = 0, E = 0, I = 0, R = 0, D = 0 } = dayState;
-  if (D > 0.5) return '#14141e';
+  if (D > 0.5) return '#ffffff';
 
   const r = Math.round(S * SEIRD_COLORS.S[0] + E * SEIRD_COLORS.E[0] + I * SEIRD_COLORS.I[0] + R * SEIRD_COLORS.R[0] + D * SEIRD_COLORS.D[0]);
   const g = Math.round(S * SEIRD_COLORS.S[1] + E * SEIRD_COLORS.E[1] + I * SEIRD_COLORS.I[1] + R * SEIRD_COLORS.R[1] + D * SEIRD_COLORS.D[1]);
@@ -74,5 +74,5 @@ export const STATE_NAMES = {
   S: 'Susceptible', E: 'Exposed', I: 'Infected', R: 'Recovered', D: 'Dead'
 };
 export const STATE_HEX = {
-  S: '#22c55e', E: '#f59e0b', I: '#ef4444', R: '#3b82f6', D: '#14141e'
+  S: '#22c55e', E: '#f59e0b', I: '#ef4444', R: '#3b82f6', D: '#ffffff'
 };

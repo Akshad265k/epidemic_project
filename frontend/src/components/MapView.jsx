@@ -1,128 +1,118 @@
-import { useEffect, useRef, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, useMap, useMapEvents } from 'react-leaflet';
+import { useRef, useEffect, useState, useMemo } from 'react';
+import { MapContainer, TileLayer, useMap, useMapEvents, Marker, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { useStore } from '../store';
-import { getNodeColorHex, getSeverityColor } from '../utils/colors';
+import { getSeverityColor, getNodeColor } from '../utils/colors';
 
 // Pune center
 const CENTER = [18.52, 73.86];
-const NODE_ZOOM_THRESHOLD = 14;
+const NODE_ZOOM_THRESHOLD = 11;
 
-export default function MapView() {
+export default function MapView({ source = 'baseline' }) {
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full relative">
+      <div className="absolute top-4 right-4 z-[400] bg-[#0a0a0f]/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-black uppercase text-indigo-400 tracking-widest flex items-center gap-2">
+        <div className={`w-1.5 h-1.5 rounded-full ${source === 'baseline' ? 'bg-slate-400' : 'bg-indigo-400 animate-pulse'}`} />
+        {source}
+      </div>
       <MapContainer
         center={CENTER}
         zoom={12}
         className="w-full h-full"
-        zoomControl={true}
-        attributionControl={true}
+        zoomControl={source === 'baseline'}
       >
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; <a href="https://carto.com/">CARTO</a>'
         />
-        <HeatmapOverlay />
-        <NodeMarkers />
+        <HeatmapOverlay source={source} />
+        <NodeMarkers source={source} />
+        <SyncMap />
       </MapContainer>
     </div>
   );
 }
 
+function SyncMap() {
+  const map = useMap();
+  // We can add cross-map synchronization here if desired
+  return null;
+}
+
 /* ───── Heatmap Canvas Overlay ───── */
-function HeatmapOverlay() {
+function HeatmapOverlay({ source }) {
   const map = useMap();
   const canvasRef = useRef(null);
-  const zones = useStore((s) => s.zones);
+  const data = useStore((s) => s[source]);
+  const zones = data?.zones || [];
   const currentDay = useStore((s) => s.currentDay);
-  const [zoom, setZoom] = useState(map.getZoom());
-
-  useMapEvents({
-    zoom: () => setZoom(map.getZoom()),
-    move: () => drawHeatmap(),
-    zoomend: () => drawHeatmap(),
-  });
 
   useEffect(() => {
-    // Create canvas overlay
-    const pane = map.createPane('heatmapPane');
-    pane.style.zIndex = '350';
-    pane.style.pointerEvents = 'none';
+    // Create a custom canvas layer
+    const CanvasLayer = L.Layer.extend({
+      onAdd: function(map) {
+        this._container = L.DomUtil.create('canvas', 'leaflet-heatmap-layer leaflet-layer');
+        this._container.style.pointerEvents = 'none';
+        this._container.style.zIndex = 300;
+        map.getPanes().overlayPane.appendChild(this._container);
+        this._map = map;
+        this._draw();
+        map.on('moveend zoomend viewreset', this._draw, this);
+      },
+      onRemove: function(map) {
+        map.getPanes().overlayPane.removeChild(this._container);
+        map.off('moveend zoomend viewreset', this._draw, this);
+      },
+      _draw: function() {
+        if (!this._container || !this._map) return;
+        const canvas = this._container;
+        const ctx = canvas.getContext('2d');
+        const size = this._map.getSize();
+        canvas.width = size.x;
+        canvas.height = size.y;
+        
+        const origin = this._map.getPixelOrigin();
+        const panePos = L.DomUtil.getPosition(this._map.getPanes().mapPane);
+        L.DomUtil.setPosition(canvas, { x: -panePos.x, y: -panePos.y });
 
-    const canvas = document.createElement('canvas');
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.zIndex = '350';
-    canvas.style.pointerEvents = 'none';
-    pane.appendChild(canvas);
-    canvasRef.current = canvas;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        zones.forEach((z) => {
+          const severity = z.severity[currentDay] || 0;
+          if (severity < 0.001) return;
 
-    const onMove = () => drawHeatmap();
-    map.on('move zoom viewreset resize', onMove);
-    drawHeatmap();
+          const point = this._map.latLngToContainerPoint([z.clat, z.clng]);
+          const radius = Math.max(20, 100 * severity * (this._map.getZoom() / 10));
+          
+          const gradient = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
+          const color = severity > 0.1 ? '255, 60, 100' : '129, 140, 248';
+          gradient.addColorStop(0, `rgba(${color}, ${Math.min(0.6, severity * 4)})`);
+          gradient.addColorStop(1, `rgba(${color}, 0)`);
 
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = gradient;
+          ctx.fill();
+        });
+      }
+    });
+
+    const layer = new CanvasLayer();
+    layer.addTo(map);
     return () => {
-      map.off('move zoom viewreset resize', onMove);
-      if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
+      layer.remove();
     };
-  }, [map]);
-
-  useEffect(() => { drawHeatmap(); }, [currentDay, zones, zoom]);
-
-  function drawHeatmap() {
-    const canvas = canvasRef.current;
-    if (!canvas || !zones.length) return;
-
-    if (map.getZoom() >= NODE_ZOOM_THRESHOLD) {
-      canvas.style.display = 'none';
-      return;
-    }
-    canvas.style.display = 'block';
-
-    const size = map.getSize();
-    if (canvas.width !== size.x || canvas.height !== size.y) {
-      canvas.width = size.x;
-      canvas.height = size.y;
-    }
-
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const day = useStore.getState().currentDay;
-
-    for (const zone of zones) {
-      const severity = zone.severity?.[day] ?? 0;
-      if (severity < 0.001) continue;
-
-      // Use ContainerPoint directly to avoid parallax
-      const pt = map.latLngToContainerPoint([zone.clat, zone.clng]);
-      const px = pt.x;
-      const py = pt.y;
-
-      const baseRadius = 80;
-      const zoomFactor = Math.pow(2, map.getZoom() - 12);
-      const radius = baseRadius * zoomFactor;
-
-      const gradient = ctx.createRadialGradient(px, py, 0, px, py, radius);
-      gradient.addColorStop(0, getSeverityColor(severity, 0.5));
-      gradient.addColorStop(0.5, getSeverityColor(severity, 0.2));
-      gradient.addColorStop(1, 'rgba(0,0,0,0)');
-
-      ctx.beginPath();
-      ctx.arc(px, py, radius, 0, Math.PI * 2);
-      ctx.fillStyle = gradient;
-      ctx.fill();
-    }
-  }
+  }, [map, zones, currentDay]);
 
   return null;
 }
 
 /* ───── Individual Node Markers ───── */
-function NodeMarkers() {
+function NodeMarkers({ source }) {
   const map = useMap();
-  const nodes = useStore((s) => s.nodes);
+  const data = useStore((s) => s[source]);
+  const nodes = data?.nodes || [];
   const currentDay = useStore((s) => s.currentDay);
   const layerGroupRef = useRef(null);
   const [zoom, setZoom] = useState(map.getZoom());
@@ -143,17 +133,14 @@ function NodeMarkers() {
     };
   }, [map]);
 
-  // Visible nodes in viewport
   const visibleNodes = useMemo(() => {
     if (zoom < NODE_ZOOM_THRESHOLD || !nodes.length) return [];
     const bounds = map.getBounds();
-    const inBounds = nodes.filter((n) =>
+    return nodes.filter((n) =>
       n.lat >= bounds.getSouth() && n.lat <= bounds.getNorth() &&
       n.lng >= bounds.getWest() && n.lng <= bounds.getEast()
-    );
-    // Limit to 200
-    return inBounds.slice(0, 200);
-  }, [zoom, nodes, currentDay]);
+    ).slice(0, 400);
+  }, [zoom, nodes, map]);
 
   useEffect(() => {
     const lg = layerGroupRef.current;
@@ -164,35 +151,25 @@ function NodeMarkers() {
 
     for (const node of visibleNodes) {
       const state = node.days?.[currentDay];
-      const color = getNodeColorHex(state);
-      const isDead = state && state.D > 0.5;
+      if (!state) continue;
 
+      const color = getNodeColor(state);
       const marker = L.circleMarker([node.lat, node.lng], {
-        radius: 5,
+        radius: 4,
         fillColor: color,
-        color: 'rgba(255,255,255,0.2)',
+        color: '#fff',
         weight: 1,
-        fillOpacity: 0.85,
+        opacity: 0.3,
+        fillOpacity: 0.8,
       });
 
-      const tooltipContent = `
-        <div style="font-family:Inter,sans-serif;font-size:11px;line-height:1.4">
-          <strong>Node #${node.id}</strong> · Zone ${node.zone}<br/>
-          <span style="color:#22c55e">S</span> ${((state?.S || 0) * 100).toFixed(1)}%
-          <span style="color:#f59e0b">E</span> ${((state?.E || 0) * 100).toFixed(1)}%
-          <span style="color:#ef4444">I</span> ${((state?.I || 0) * 100).toFixed(1)}%
-          <span style="color:#3b82f6">R</span> ${((state?.R || 0) * 100).toFixed(1)}%
-          <span style="color:#666">D</span> ${((state?.D || 0) * 100).toFixed(1)}%
-        </div>
-      `;
-
-      marker.bindTooltip(tooltipContent, {
+      marker.bindTooltip(`Node #${node.id}<br/>I: ${(state.I * 100).toFixed(1)}%`, {
         className: 'custom-tooltip',
         direction: 'top',
-        offset: [0, -8],
+        offset: [0, -5]
       });
-
-      lg.addLayer(marker);
+      
+      marker.addTo(lg);
     }
   }, [visibleNodes, currentDay, zoom]);
 

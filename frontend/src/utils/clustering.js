@@ -7,11 +7,19 @@ const MAX_VISIBLE = 200;
 export function buildHierarchy(nodes, edgesSrc, edgesDst) {
   if (!nodes || nodes.length === 0) return null;
 
+  // Create a lookup for quick access by ID
+  const nodeLookup = new Map();
+  nodes.forEach(n => nodeLookup.set(n.id, n));
+
   // 1. Build Adjacency List
   const adj = new Map();
   for (let i = 0; i < edgesSrc.length; i++) {
     const u = edgesSrc[i], v = edgesDst[i];
     if (u === v) continue;
+    
+    // Only include edges between nodes we actually have in our subset
+    if (!nodeLookup.has(u) || !nodeLookup.has(v)) continue;
+
     if (!adj.has(u)) adj.set(u, []);
     if (!adj.has(v)) adj.set(v, []);
     adj.get(u).push(v);
@@ -29,10 +37,10 @@ export function buildHierarchy(nodes, edgesSrc, edgesDst) {
     communityNodes[cid].push(parseInt(nid));
   }
 
-  return buildLevel(communityNodes, nodes, adj, 'root');
+  return buildLevel(communityNodes, nodes, adj, 'root', nodeLookup);
 }
 
-function buildLevel(communityNodes, allNodes, fullAdj, parentId) {
+function buildLevel(communityNodes, allNodes, fullAdj, parentId, nodeLookup) {
   let communities = Object.entries(communityNodes).map(([cid, nodeIds]) => ({
     id: cid,
     nodeIds,
@@ -81,11 +89,11 @@ function buildLevel(communityNodes, allNodes, fullAdj, parentId) {
 
   const children = communities.map(c => {
     if (c.count === 1) {
-      const node = allNodes[c.nodeIds[0]];
+      const node = nodeLookup.get(c.nodeIds[0]);
       return { id: node.id, type: 'node', count: 1, lat: node.lat, lng: node.lng, nodeIds: [node.id], children: null };
     }
 
-    const clusterNodes = c.nodeIds.map(id => allNodes[id]);
+    const clusterNodes = c.nodeIds.map(id => nodeLookup.get(id));
     const cluster = {
       id: `${parentId}_${c.id}`,
       type: 'cluster',
@@ -113,12 +121,12 @@ function buildLevel(communityNodes, allNodes, fullAdj, parentId) {
     
     // We only subdivide if we have more than 1 community or if the cluster is very large
     if (Object.keys(subCommNodes).length > 1) {
-      cluster.children = buildLevel(subCommNodes, allNodes, fullAdj, cluster.id).children;
+      cluster.children = buildLevel(subCommNodes, allNodes, fullAdj, cluster.id, nodeLookup).children;
     } else {
       // If LPA found 1 big community, but it's > 200 nodes, we must split it some other way
       // Fallback to spatial split if connectivity is too dense/uniform to split
       cluster.children = c.nodeIds.map(id => {
-        const node = allNodes[id];
+        const node = nodeLookup.get(id);
         return { id: node.id, type: 'node', count: 1, lat: node.lat, lng: node.lng, nodeIds: [node.id], children: null };
       }).slice(0, MAX_VISIBLE);
     }
@@ -152,6 +160,7 @@ function computeCommunities(nodeIds, adj, iterations = 10) {
       let maxLabel = labels[u], maxCount = 0;
       for (const v of neighbors) {
         const l = labels[v];
+        if (l === undefined) continue; // Skip neighbors not in our subset
         counts[l] = (counts[l] || 0) + 1;
         if (counts[l] > maxCount) {
           maxCount = counts[l];
@@ -169,8 +178,8 @@ function computeCommunities(nodeIds, adj, iterations = 10) {
 }
 
 function avg(arr, key) {
-  if (arr.length === 0) return 0;
-  return arr.reduce((s, i) => s + (i[key] || 0), 0) / arr.length;
+  if (!arr || arr.length === 0) return 0;
+  return arr.reduce((s, i) => s + (i ? (i[key] || 0) : 0), 0) / arr.length;
 }
 
 
@@ -209,12 +218,23 @@ function findCluster(node, targetId) {
 export function aggregateClusterState(nodeIds, allNodes, day) {
   if (!nodeIds || nodeIds.length === 0) return { S: 0, E: 0, I: 0, R: 0, D: 0, count: 0 };
 
-  // Build lookup if not cached
+  // Note: allNodes is an array, we need to find the node with the given ID
+  // For performance, we assume allNodes is the same array passed to buildHierarchy
+  // and we can build a temporary lookup if needed, but since this is called in the draw loop,
+  // it's better if we passed a Map. However, to keep the API stable, we'll search.
+  // Actually, we can pre-build a lookup in the component and pass it here, or just use a Map in the store.
+  
+  // Optimization: use a Map for lookups if the array is large
+  if (!allNodes._lookup) {
+    allNodes._lookup = new Map();
+    allNodes.forEach(n => allNodes._lookup.set(n.id, n));
+  }
+
   let totals = { S: 0, E: 0, I: 0, R: 0, D: 0 };
   let count = 0;
 
   for (const id of nodeIds) {
-    const node = allNodes[id];
+    const node = allNodes._lookup.get(id);
     if (!node || !node.days || !node.days[day]) continue;
     const d = node.days[day];
     totals.S += d.S;
@@ -236,3 +256,4 @@ export function aggregateClusterState(nodeIds, allNodes, day) {
     count,
   };
 }
+

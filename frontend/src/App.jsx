@@ -1,10 +1,13 @@
 import { useStore } from './store';
-import UploadView from './components/UploadView';
-import GraphView from './components/GraphView';
-import MapView from './components/MapView';
-import Timeline from './components/Timeline';
-import StatsSidebar from './components/StatsSidebar';
-import VirusLoader from './components/VirusLoader';
+import UploadView from './components/UploadView.jsx';
+import GraphView from './components/GraphView.jsx';
+import MapView from './components/MapView.jsx';
+import Timeline from './components/Timeline.jsx';
+import StatsSidebar from './components/StatsSidebar.jsx';
+import AnalyticsPanel from './components/AnalyticsPanel.jsx';
+import InterventionPanel from './components/InterventionPanel.jsx';
+import VirusLoader from './components/VirusLoader.jsx';
+import { AnimatePresence, motion } from 'framer-motion';
 
 const TABS = [
   { key: 'upload', label: 'Upload', icon: '↑' },
@@ -18,21 +21,28 @@ export default function App() {
   const isLoading = useStore((s) => s.isLoading);
   const nodes = useStore((s) => s.nodes);
   const hasData = nodes.length > 0;
+  const isComparing = useStore((s) => s.isComparing);
+  const hasInsights = useStore((s) => !!s.zoneInsights);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[var(--color-bg-primary)]">
+    <div className="flex flex-col h-screen w-screen bg-[#050508] overflow-hidden text-slate-100 selection:bg-indigo-500/30">
       {/* ── Top Nav Bar ── */}
-      <nav className="glass-strong flex items-center justify-between px-6 h-14 shrink-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-sm font-bold">
+      <nav className="flex items-center justify-between px-10 h-20 shrink-0 z-50 bg-[#0a0a0f]/80 backdrop-blur-2xl border-b border-white/5 shadow-2xl">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center text-lg font-black shadow-lg shadow-indigo-500/20">
             E
           </div>
-          <h1 className="text-base font-semibold tracking-tight">
-            <span className="text-[var(--color-accent-light)]">Epi</span>Scope
-          </h1>
+          <div>
+            <h1 className="text-xl font-black tracking-tight leading-none text-white">
+              <span className="text-indigo-400">Epi</span>Scope
+            </h1>
+            <div className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mt-1">
+              Neural ODE Analysis
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1 bg-[var(--color-bg-primary)] rounded-xl p-1">
+        <div className="flex items-center gap-1 bg-white/5 border border-white/5 rounded-2xl p-1.5 shadow-inner">
           {TABS.map((tab) => {
             const disabled = tab.key !== 'upload' && !hasData;
             return (
@@ -41,45 +51,125 @@ export default function App() {
                 disabled={disabled}
                 onClick={() => !disabled && setActiveView(tab.key)}
                 className={`
-                  px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200
+                  px-6 py-2 rounded-xl text-sm font-bold transition-all duration-300 flex items-center gap-2
                   ${activeView === tab.key
-                    ? 'bg-[var(--color-accent)] text-white shadow-lg shadow-indigo-500/20'
+                    ? 'bg-indigo-500 text-white shadow-xl shadow-indigo-500/30'
                     : disabled
-                      ? 'text-[var(--color-text-muted)] cursor-not-allowed opacity-40'
-                      : 'text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-bg-hover)]'
+                      ? 'text-slate-600 cursor-not-allowed opacity-30'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
                   }
                 `}
               >
-                <span className="mr-1.5">{tab.icon}</span>
+                <span className="text-base">{tab.icon}</span>
                 {tab.label}
               </button>
             );
           })}
         </div>
 
-        <div className="text-xs text-[var(--color-text-muted)] font-mono">
-          {hasData ? `${nodes.length.toLocaleString()} nodes` : 'No data loaded'}
+        <div className="hidden md:flex flex-col items-end">
+          <div className="text-xs font-bold text-white">
+            {hasData ? `${nodes.length.toLocaleString()} Nodes` : 'System Ready'}
+          </div>
+          <div className="flex items-center gap-1.5 mt-1">
+            <div className={`w-1.5 h-1.5 rounded-full ${hasData ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+              {hasData ? (isComparing ? 'Comparison Mode' : 'Live Stream') : 'Awaiting Input'}
+            </div>
+          </div>
         </div>
       </nav>
 
-      {/* ── Main Content ── */}
-      <div className="flex flex-1 min-h-0 relative">
-        {/* Stats Sidebar (only when data exists and not on upload view) */}
-        {hasData && activeView !== 'upload' && <StatsSidebar />}
+      {/* ── Main Content Area ── */}
+      <main className="flex-1 flex flex-col min-h-0 relative p-8 lg:p-10 gap-8">
+        <div className="flex flex-1 min-h-0 gap-8">
+          {/* Left: Stats or Intervention */}
+          <AnimatePresence mode="wait">
+            {(hasData || isLoading) && activeView !== 'upload' && (
+              <motion.div
+                key={hasInsights ? 'intervention' : 'stats'}
+                initial={{ opacity: 0, x: -30 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -30 }}
+                className="w-[400px] shrink-0 h-full"
+              >
+                {hasInsights ? <InterventionPanel /> : <StatsSidebar />}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-        {/* View Area */}
-        <div className="flex-1 relative min-w-0">
-          {activeView === 'upload' && <UploadView />}
-          {activeView === 'graph' && hasData && <GraphView />}
-          {activeView === 'map' && hasData && <MapView />}
+          {/* Center: Main Visualization */}
+          <div className="flex-1 relative min-w-0 h-full">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={`${activeView}-${isComparing}`}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.5, ease: "easeOut" }}
+                className="h-full w-full"
+              >
+                <div className={`h-full w-full ${activeView !== 'upload' ? 'bg-[#0a0a0f]/40 backdrop-blur-3xl rounded-[40px] overflow-hidden shadow-2xl border border-white/10' : ''}`}>
+                  {activeView === 'upload' && <UploadView />}
+                  {(activeView === 'graph' || (activeView === 'graph' && isLoading)) && <GraphView />}
+                  {activeView === 'map' && hasData && (
+                    isComparing ? (
+                      <div className="grid grid-cols-2 h-full gap-px bg-white/5">
+                        <MapView source="baseline" />
+                        <MapView source="scenario" />
+                      </div>
+                    ) : (
+                      <MapView source="baseline" />
+                    )
+                  )}
+                </div>
+              </motion.div>
+            </AnimatePresence>
+          </div>
+
+          {/* Right: Medical Analytics */}
+          <AnimatePresence mode="wait">
+            {(hasData || isLoading) && activeView !== 'upload' && (
+              <motion.div
+                initial={{ opacity: 0, x: 30 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 30 }}
+                className="w-[400px] shrink-0 h-full"
+              >
+                <AnalyticsPanel />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-      </div>
 
-      {/* ── Timeline (only when data exists and not on upload) ── */}
-      {hasData && activeView !== 'upload' && <Timeline />}
+        {/* Bottom: Timeline */}
+        <AnimatePresence>
+          {(hasData || isLoading) && activeView !== 'upload' && (
+            <motion.div
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              className="h-28 shrink-0"
+            >
+              <Timeline />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
 
       {/* ── Loading Overlay ── */}
-      {isLoading && <VirusLoader />}
+      <AnimatePresence>
+        {isLoading && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-[#050508]/90 backdrop-blur-3xl"
+          >
+            <VirusLoader />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

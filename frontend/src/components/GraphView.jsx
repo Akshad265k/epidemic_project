@@ -65,6 +65,12 @@ export default function GraphView() {
     return result;
   }, [visibleItems, edgesSrc, edgesDst]);
 
+  const nodeLookup = useMemo(() => {
+    const m = new Map();
+    nodes.forEach(n => m.set(n.id, n));
+    return m;
+  }, [nodes]);
+
   // Draw loop
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -99,7 +105,7 @@ export default function GraphView() {
     // Draw nodes
     for (const n of simNodes) {
       const state = n._type === 'node'
-        ? nodes[n._origId]?.days?.[day]
+        ? nodeLookup.get(n._origId)?.days?.[day]
         : aggregateClusterState(n._nodeIds, nodes, day);
 
       const color = getNodeColor(state);
@@ -143,7 +149,7 @@ export default function GraphView() {
     }
 
     ctx.restore();
-  }, [nodes, visibleEdges]);
+  }, [nodes, visibleEdges, nodeLookup]);
 
   // Setup simulation and interactions
   useEffect(() => {
@@ -222,7 +228,7 @@ export default function GraphView() {
       if (found) {
         const day = useStore.getState().currentDay;
         const state = found._type === 'node'
-          ? nodes[found._origId]?.days?.[day]
+          ? nodeLookup.get(found._origId)?.days?.[day]
           : aggregateClusterState(found._nodeIds, nodes, day);
 
         setTooltip({
@@ -237,6 +243,7 @@ export default function GraphView() {
       }
       draw();
     };
+
 
     const handleClick = (e) => {
       const rect = canvas.getBoundingClientRect();
@@ -275,16 +282,16 @@ export default function GraphView() {
   return (
     <div ref={wrapperRef} className="w-full h-full relative">
       {/* Breadcrumbs */}
-      <div className="absolute top-3 left-3 z-10 flex items-center gap-1 glass rounded-xl px-3 py-1.5">
+      <div className="absolute top-4 left-4 z-10 flex items-center gap-1 bg-[#0a0a0f]/60 backdrop-blur-xl rounded-2xl px-4 py-2 border border-white/5 shadow-2xl">
         {breadcrumbs.map((bc, i) => (
           <span key={i} className="flex items-center gap-1">
-            {i > 0 && <span className="text-[var(--color-text-muted)] text-xs">›</span>}
+            {i > 0 && <span className="text-slate-600 text-xs">›</span>}
             <button
               onClick={() => navigateTo(i)}
-              className={`text-xs px-1.5 py-0.5 rounded-md transition-colors
+              className={`text-xs px-2 py-1 rounded-lg transition-all
                 ${i === breadcrumbs.length - 1
-                  ? 'text-[var(--color-accent-light)] font-semibold'
-                  : 'text-[var(--color-text-secondary)] hover:text-white'}`}
+                  ? 'text-indigo-400 font-black bg-indigo-500/10'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
             >
               {bc.label}
             </button>
@@ -297,8 +304,8 @@ export default function GraphView() {
       {/* Tooltip */}
       {tooltip && (
         <div
-          className="fixed z-50 glass rounded-xl p-3 pointer-events-none max-w-xs"
-          style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          className="fixed z-50 bg-[#0a0a0f]/90 backdrop-blur-2xl rounded-2xl p-4 pointer-events-none max-w-xs border border-white/10 shadow-2xl"
+          style={{ left: tooltip.x + 16, top: tooltip.y - 16 }}
         >
           {tooltip.type === 'node' ? (
             <div>
