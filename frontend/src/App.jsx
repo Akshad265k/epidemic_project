@@ -9,7 +9,7 @@ import InterventionPanel from './components/InterventionPanel.jsx';
 import VirusLoader from './components/VirusLoader.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const TABS = [
   { key: 'upload', label: 'Upload', icon: '↑' },
@@ -27,6 +27,49 @@ export default function App() {
   const hasInsights = useStore((s) => !!s.zoneInsights);
 
   const [panelsOpen, setPanelsOpen] = useState(true);
+
+  /* ── Global Playback Controller (Persistent) ── */
+  const isPlaying = useStore((s) => s.isPlaying);
+  const playbackSpeed = useStore((s) => s.playbackSpeed);
+  const currentDay = useStore((s) => s.currentDay);
+  const setCurrentDay = useStore((s) => s.setCurrentDay);
+  const setIsPlaying = useStore((s) => s.setIsPlaying);
+  
+  const rafRef = useRef(null);
+  const lastTimeRef = useRef(null);
+  const fractionalDay = useRef(0);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      lastTimeRef.current = null;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      return;
+    }
+    
+    fractionalDay.current = currentDay;
+    
+    const tick = (timestamp) => {
+      if (lastTimeRef.current === null) {
+        lastTimeRef.current = timestamp;
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const dt = (timestamp - lastTimeRef.current) / 1000;
+      lastTimeRef.current = timestamp;
+      fractionalDay.current += dt * playbackSpeed;
+
+      if (fractionalDay.current >= 29) {
+        setCurrentDay(29);
+        setIsPlaying(false);
+        return;
+      }
+      setCurrentDay(Math.floor(fractionalDay.current));
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [isPlaying, playbackSpeed, setCurrentDay, setIsPlaying]);
 
   return (
     <div className="relative h-screen w-screen bg-[#030305] overflow-hidden text-slate-100 selection:bg-indigo-500/30">
@@ -142,37 +185,41 @@ export default function App() {
       </nav>
 
       {/* ── Floating HUD Panels ── */}
-      <AnimatePresence mode="wait">
-        {(hasData || isLoading) && activeView !== 'upload' && panelsOpen && (
+        {(hasData || isLoading) && activeView !== 'upload' && (
           <>
-            {/* Left Panel */}
-            <motion.div
-              key={hasInsights ? 'intervention' : 'stats'}
-              initial={{ opacity: 0, x: -40, filter: 'blur(10px)' }}
-              animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
-              exit={{ opacity: 0, x: -40, filter: 'blur(10px)' }}
-              transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-              className="absolute left-6 top-28 bottom-36 w-[420px] z-20 pointer-events-auto"
-            >
-              <div className="h-full w-full glass-panel rounded-[32px] overflow-hidden flex flex-col">
-                {hasInsights ? <InterventionPanel /> : <StatsSidebar />}
-              </div>
-            </motion.div>
+            {/* Left/Right Panels (Hidden when panelsOpen is false) */}
+            <AnimatePresence>
+              {panelsOpen && (
+                <>
+                  <motion.div
+                    key={hasInsights ? 'intervention' : 'stats'}
+                    initial={{ opacity: 0, x: -40, filter: 'blur(10px)' }}
+                    animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
+                    exit={{ opacity: 0, x: -40, filter: 'blur(10px)' }}
+                    transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+                    className="absolute left-6 top-28 bottom-36 w-[420px] z-20 pointer-events-auto"
+                  >
+                    <div className="h-full w-full glass-panel rounded-[32px] overflow-hidden flex flex-col">
+                      {hasInsights ? <InterventionPanel /> : <StatsSidebar />}
+                    </div>
+                  </motion.div>
 
-            {/* Right Panel */}
-            <motion.div
-              initial={{ opacity: 0, x: 40, filter: 'blur(10px)' }}
-              animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
-              exit={{ opacity: 0, x: 40, filter: 'blur(10px)' }}
-              transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1], delay: 0.1 }}
-              className="absolute right-6 top-28 bottom-36 w-[420px] z-20 pointer-events-auto"
-            >
-              <div className="h-full w-full glass-panel rounded-[32px] overflow-hidden flex flex-col">
-                <AnalyticsPanel />
-              </div>
-            </motion.div>
+                  <motion.div
+                    initial={{ opacity: 0, x: 40, filter: 'blur(10px)' }}
+                    animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
+                    exit={{ opacity: 0, x: 40, filter: 'blur(10px)' }}
+                    transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1], delay: 0.1 }}
+                    className="absolute right-6 top-28 bottom-36 w-[420px] z-20 pointer-events-auto"
+                  >
+                    <div className="h-full w-full glass-panel rounded-[32px] overflow-hidden flex flex-col">
+                      <AnalyticsPanel />
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
 
-            {/* Bottom Timeline */}
+            {/* Bottom Timeline (Always visible) */}
             <motion.div
               initial={{ opacity: 0, y: 40, filter: 'blur(10px)' }}
               animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
@@ -184,7 +231,6 @@ export default function App() {
             </motion.div>
           </>
         )}
-      </AnimatePresence>
 
       {/* ── Loading Overlay ── */}
       <AnimatePresence>

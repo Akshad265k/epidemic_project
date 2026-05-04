@@ -10,38 +10,6 @@ export default function Timeline() {
   const playbackSpeed = useStore((s) => s.playbackSpeed);
   const setPlaybackSpeed = useStore((s) => s.setPlaybackSpeed);
   const nodes = useStore((s) => s.nodes);
-  const rafRef = useRef(null);
-  const lastTimeRef = useRef(null);
-  const fractionalDay = useRef(0);
-
-  useEffect(() => {
-    if (!isPlaying) {
-      lastTimeRef.current = null;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      return;
-    }
-    fractionalDay.current = currentDay;
-    const tick = (timestamp) => {
-      if (lastTimeRef.current === null) {
-        lastTimeRef.current = timestamp;
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      const dt = (timestamp - lastTimeRef.current) / 1000;
-      lastTimeRef.current = timestamp;
-      fractionalDay.current += dt * playbackSpeed;
-
-      if (fractionalDay.current >= 29) {
-        setCurrentDay(29);
-        useStore.getState().setIsPlaying(false);
-        return;
-      }
-      setCurrentDay(Math.floor(fractionalDay.current));
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isPlaying, playbackSpeed]);
 
   const aggregates = useRef([]);
   useEffect(() => {
