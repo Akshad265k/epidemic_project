@@ -12,7 +12,7 @@ const NODE_ZOOM_THRESHOLD = 11;
 export default function MapView({ source = 'baseline' }) {
   return (
     <div className="w-full h-full relative">
-      <div className="absolute top-4 right-4 z-[400] bg-[#0a0a0f]/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-black uppercase text-indigo-400 tracking-widest flex items-center gap-2">
+      <div className="absolute top-[110px] right-8 z-[400] bg-[#0a0a0f]/80 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[10px] font-black uppercase text-indigo-400 tracking-widest flex items-center gap-2">
         <div className={`w-1.5 h-1.5 rounded-full ${source === 'baseline' ? 'bg-slate-400' : 'bg-indigo-400 animate-pulse'}`} />
         {source}
       </div>
@@ -51,7 +51,7 @@ function HeatmapOverlay({ source }) {
   useEffect(() => {
     // Create a custom canvas layer
     const CanvasLayer = L.Layer.extend({
-      onAdd: function(map) {
+      onAdd: function (map) {
         this._container = L.DomUtil.create('canvas', 'leaflet-heatmap-layer leaflet-layer');
         this._container.style.pointerEvents = 'none';
         this._container.style.zIndex = 300;
@@ -60,31 +60,31 @@ function HeatmapOverlay({ source }) {
         this._draw();
         map.on('moveend zoomend viewreset', this._draw, this);
       },
-      onRemove: function(map) {
+      onRemove: function (map) {
         map.getPanes().overlayPane.removeChild(this._container);
         map.off('moveend zoomend viewreset', this._draw, this);
       },
-      _draw: function() {
+      _draw: function () {
         if (!this._container || !this._map) return;
         const canvas = this._container;
         const ctx = canvas.getContext('2d');
         const size = this._map.getSize();
         canvas.width = size.x;
         canvas.height = size.y;
-        
+
         const origin = this._map.getPixelOrigin();
         const panePos = L.DomUtil.getPosition(this._map.getPanes().mapPane);
         L.DomUtil.setPosition(canvas, { x: -panePos.x, y: -panePos.y });
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
+
         zones.forEach((z) => {
           const severity = z.severity[currentDay] || 0;
           if (severity < 0.001) return;
 
           const point = this._map.latLngToContainerPoint([z.clat, z.clng]);
           const radius = Math.max(20, 100 * severity * (this._map.getZoom() / 10));
-          
+
           const gradient = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
           const color = severity > 0.1 ? '255, 60, 100' : '129, 140, 248';
           gradient.addColorStop(0, `rgba(${color}, ${Math.min(0.6, severity * 4)})`);
@@ -168,7 +168,7 @@ function NodeMarkers({ source }) {
         direction: 'top',
         offset: [0, -5]
       });
-      
+
       marker.addTo(lg);
     }
   }, [visibleNodes, currentDay, zoom]);

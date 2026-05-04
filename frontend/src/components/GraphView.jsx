@@ -1,346 +1,187 @@
-import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
-import * as d3 from 'd3';
+import { useMemo, useState } from 'react';
+import DeckGL from '@deck.gl/react';
+import { ScatterplotLayer, ArcLayer } from '@deck.gl/layers';
+import { HeatmapLayer } from '@deck.gl/aggregation-layers';
+import MapGL from 'react-map-gl/maplibre';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { useStore } from '../store';
-import { getNodeColor } from '../utils/colors';
-import { buildHierarchy, getVisibleItems, aggregateClusterState } from '../utils/clustering';
+import { getNodeColorHex, STATE_NAMES, STATE_HEX } from '../utils/colors';
+
+const INITIAL_VIEW_STATE = {
+  longitude: 73.86,
+  latitude: 18.52,
+  zoom: 12,
+  pitch: 50,
+  bearing: 0,
+  maxZoom: 20,
+  minZoom: 10
+};
+
+// Helper to convert hex to RGB array for DeckGL
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return [r, g, b, 255];
+}
 
 export default function GraphView() {
-  const canvasRef = useRef(null);
-  const wrapperRef = useRef(null);
-  const simRef = useRef(null);
-  const nodesDataRef = useRef([]);
-  const transformRef = useRef(d3.zoomIdentity);
-  const hoveredRef = useRef(null);
-
   const nodes = useStore((s) => s.nodes);
   const edgesSrc = useStore((s) => s.edgesSrc);
   const edgesDst = useStore((s) => s.edgesDst);
   const currentDay = useStore((s) => s.currentDay);
-  const currentClusterId = useStore((s) => s.currentClusterId);
-  const drillInto = useStore((s) => s.drillInto);
-  const breadcrumbs = useStore((s) => s.breadcrumbs);
-  const navigateTo = useStore((s) => s.navigateTo);
 
-  const [tooltip, setTooltip] = useState(null);
+  const [tooltipInfo, setTooltipInfo] = useState(null);
 
-  // Build hierarchy once
-  const hierarchy = useMemo(() => {
-    if (!nodes.length) return null;
-    return buildHierarchy(nodes, edgesSrc, edgesDst);
-  }, [nodes, edgesSrc, edgesDst]);
-
-  // Get visible items at current cluster level
-  const visibleItems = useMemo(() => {
-    if (!hierarchy) return [];
-    return getVisibleItems(hierarchy, currentClusterId);
-  }, [hierarchy, currentClusterId]);
-
-  // Compute edges between visible items (clusters or nodes)
-  const visibleEdges = useMemo(() => {
-    if (!visibleItems.length || !edgesSrc.length) return [];
-    
-    const nodeToVisibleIndex = new Map();
-    visibleItems.forEach((item, idx) => {
-      item.nodeIds.forEach(nid => {
-        nodeToVisibleIndex.set(nid, idx);
-      });
-    });
-
-    const seen = new Set();
-    const result = [];
-    for (let i = 0; i < edgesSrc.length; i++) {
-      const u = edgesSrc[i];
-      const v = edgesDst[i];
-      const idxU = nodeToVisibleIndex.get(u);
-      const idxV = nodeToVisibleIndex.get(v);
-      
-      if (idxU !== undefined && idxV !== undefined && idxU !== idxV) {
-        const pair = idxU < idxV ? `${idxU}_${idxV}` : `${idxV}_${idxU}`;
-        if (!seen.has(pair)) {
-          seen.add(pair);
-          result.push([idxU, idxV]);
-        }
-      }
-    }
-    return result;
-  }, [visibleItems, edgesSrc, edgesDst]);
-
+  // Bypassing clustering entirely: Prepare ALL nodes
   const nodeLookup = useMemo(() => {
     const m = new Map();
     nodes.forEach(n => m.set(n.id, n));
     return m;
   }, [nodes]);
 
-  // Draw loop
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    const t = transformRef.current;
-    const day = useStore.getState().currentDay;
-
-    ctx.clearRect(0, 0, w, h);
-    ctx.save();
-    ctx.translate(t.x, t.y);
-    ctx.scale(t.k, t.k);
-
-    const simNodes = nodesDataRef.current;
-    
-    // Draw edges
-    const isNodeLevel = simNodes.length > 0 && simNodes[0]._type === 'node';
-    ctx.strokeStyle = isNodeLevel ? 'rgba(120,120,160,0.3)' : 'rgba(100,100,140,0.15)';
-    ctx.lineWidth = isNodeLevel ? 1.2 : 0.8;
-    for (const [srcIdx, dstIdx] of visibleEdges) {
-      const u = simNodes[srcIdx];
-      const v = simNodes[dstIdx];
-      if (!u || !v) continue;
-      
-      ctx.beginPath();
-      ctx.moveTo(u.x, u.y);
-      ctx.lineTo(v.x, v.y);
-      ctx.stroke();
-    }
-
-    // Draw nodes
-    for (const n of simNodes) {
-      const state = n._type === 'node'
-        ? nodeLookup.get(n._origId)?.days?.[day]
-        : aggregateClusterState(n._nodeIds, nodes, day);
-
-      const color = getNodeColor(state);
-      const r = n._radius;
-
-      // Glow
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 3, 0, Math.PI * 2);
-      ctx.fillStyle = color.replace('rgb', 'rgba').replace(')', ',0.15)');
-      ctx.fill();
-
-      // Node
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-
-      // Border
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Cluster count label
-      if (n._type === 'cluster' && n._count > 1) {
-        ctx.fillStyle = 'rgba(255,255,255,0.9)';
-        ctx.font = `bold ${Math.max(8, r * 0.6)}px Inter`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(n._count > 999 ? `${(n._count / 1000).toFixed(1)}k` : String(n._count), n.x, n.y);
-      }
-    }
-
-    // Highlight hovered
-    const hovered = hoveredRef.current;
-    if (hovered) {
-      ctx.beginPath();
-      ctx.arc(hovered.x, hovered.y, hovered._radius + 5, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  }, [nodes, visibleEdges, nodeLookup]);
-
-  // Setup simulation and interactions
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const wrapper = wrapperRef.current;
-    if (!canvas || !wrapper || !visibleItems.length) return;
-
-    const w = wrapper.clientWidth;
-    const h = wrapper.clientHeight;
-    canvas.width = w;
-    canvas.height = h;
-
-    const simNodes = visibleItems.map((item) => {
-      const isNode = item.type === 'node' && item.count === 1;
-      const count = item.count || 1;
-      const radius = isNode ? 5 : Math.max(7, Math.min(32, Math.sqrt(count) * 1.8));
-      return {
-        x: w / 2 + (Math.random() - 0.5) * w * 0.6,
-        y: h / 2 + (Math.random() - 0.5) * h * 0.6,
-        _origId: isNode ? (item.nodeIds?.[0] ?? item.id) : item.id,
-        _type: isNode ? 'node' : 'cluster',
-        _count: count,
-        _nodeIds: item.nodeIds || [],
-        _radius: radius,
-        _item: item,
-      };
-    });
-    nodesDataRef.current = simNodes;
-
-    // Force simulation
-    if (simRef.current) simRef.current.stop();
-    const sim = d3.forceSimulation(simNodes)
-      .force('center', d3.forceCenter(w / 2, h / 2))
-      .force('charge', d3.forceManyBody().strength(-100))
-      .force('collision', d3.forceCollide().radius(d => d._radius + 5))
-      .force('x', d3.forceX(w / 2).strength(0.05))
-      .force('y', d3.forceY(h / 2).strength(0.05))
-      .alphaDecay(0.05)
-      .on('tick', draw);
-    simRef.current = sim;
-
-    // Zoom
-    const zoom = d3.zoom()
-      .scaleExtent([0.2, 8])
-      .on('zoom', (e) => {
-        transformRef.current = e.transform;
-        draw();
-      });
-    const zoomSelection = d3.select(canvas);
-    zoomSelection.call(zoom);
-
-    // Initial "zoom in" effect when entering a level
-    zoomSelection.transition().duration(800)
-      .call(zoom.transform, d3.zoomIdentity);
-
-    // Hit detection
-    const findNode = (mx, my) => {
-      const t = transformRef.current;
-      const px = (mx - t.x) / t.k;
-      const py = (my - t.y) / t.k;
-      for (let i = simNodes.length - 1; i >= 0; i--) {
-        const n = simNodes[i];
-        const dx = px - n.x, dy = py - n.y;
-        if (dx * dx + dy * dy < (n._radius + 6) ** 2) return n;
-      }
-      return null;
-    };
-
-    const handleMouseMove = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-      const found = findNode(mx, my);
-      hoveredRef.current = found;
-      canvas.style.cursor = found ? 'pointer' : 'grab';
-
-      if (found) {
-        const day = useStore.getState().currentDay;
-        const state = found._type === 'node'
-          ? nodeLookup.get(found._origId)?.days?.[day]
-          : aggregateClusterState(found._nodeIds, nodes, day);
-
-        setTooltip({
-          x: e.clientX, y: e.clientY,
-          type: found._type,
-          count: found._count,
-          id: found._origId,
-          state,
+  // Create Arc data from edges
+  const arcData = useMemo(() => {
+    if (!edgesSrc.length) return [];
+    const arcs = [];
+    for (let i = 0; i < edgesSrc.length; i++) {
+      const u = nodeLookup.get(edgesSrc[i]);
+      const v = nodeLookup.get(edgesDst[i]);
+      if (u && v) {
+        arcs.push({
+          source: [u.lng, u.lat],
+          target: [v.lng, v.lat]
         });
-      } else {
-        setTooltip(null);
       }
-      draw();
-    };
+    }
+    return arcs;
+  }, [edgesSrc, edgesDst, nodeLookup]);
 
-
-    const handleClick = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const found = findNode(e.clientX - rect.left, e.clientY - rect.top);
-      if (found && found._type === 'cluster' && found._item.children) {
-        // Zoom transition effect
-        const t = transformRef.current;
-        const targetScale = t.k * 3;
-        const targetX = w / 2 - found.x * targetScale;
-        const targetY = h / 2 - found.y * targetScale;
-        
-        zoomSelection.transition().duration(700)
-          .call(zoom.transform, d3.zoomIdentity.translate(targetX, targetY).scale(targetScale))
-          .on('end', () => {
-            drillInto(found._item.id, `Cluster (${found._count})`);
-            setTooltip(null);
-          });
+  const layers = [
+    new ArcLayer({
+      id: 'transmission-arcs',
+      data: arcData,
+      getSourcePosition: d => d.source,
+      getTargetPosition: d => d.target,
+      getSourceColor: [129, 140, 248, 15], // Indigo, highly translucent for glowing effect
+      getTargetColor: [244, 63, 94, 15],   // Rose
+      getWidth: 1,
+      widthUnits: 'pixels'
+    }),
+    new HeatmapLayer({
+      id: 'heatmap-layer',
+      data: nodes,
+      getPosition: d => [d.lng, d.lat],
+      getWeight: d => {
+        const state = d.days?.[currentDay];
+        if (!state) return 0;
+        // Heavily weight infected, somewhat weight exposed
+        return (state.I || 0) * 10 + (state.E || 0) * 3;
+      },
+      radiusPixels: 50,
+      intensity: 1.5,
+      threshold: 0.05,
+      colorRange: [
+        [0, 0, 0, 0], // transparent
+        [245, 158, 11, 40], // amber/orange
+        [249, 115, 22, 80],
+        [239, 68, 68, 150], // red
+        [185, 28, 28, 200], // dark red
+        [127, 29, 29, 255]
+      ],
+      updateTriggers: {
+        getWeight: [currentDay]
       }
-    };
-
-    canvas.addEventListener('mousemove', handleMouseMove);
-    canvas.addEventListener('click', handleClick);
-    canvas.addEventListener('mouseleave', () => { hoveredRef.current = null; setTooltip(null); draw(); });
-
-    return () => {
-      sim.stop();
-      canvas.removeEventListener('mousemove', handleMouseMove);
-      canvas.removeEventListener('click', handleClick);
-      d3.select(canvas).on('.zoom', null);
-    };
-  }, [visibleItems, draw, drillInto, nodes]);
-
-  // Redraw when day changes
-  useEffect(() => { draw(); }, [currentDay, draw]);
+    }),
+    new ScatterplotLayer({
+      id: 'nodes-layer',
+      data: nodes,
+      getPosition: d => [d.lng, d.lat],
+      getFillColor: d => {
+        const state = d.days?.[currentDay];
+        const hex = getNodeColorHex(state);
+        return hexToRgb(hex);
+      },
+      getRadius: 15,
+      radiusUnits: 'meters',
+      radiusMinPixels: 2.5,
+      radiusMaxPixels: 15,
+      pickable: true,
+      onHover: info => setTooltipInfo(info.object ? info : null),
+      updateTriggers: {
+        getFillColor: [currentDay]
+      }
+    })
+  ];
 
   return (
-    <div ref={wrapperRef} className="w-full h-full relative">
-      {/* Breadcrumbs */}
-      <div className="absolute top-4 left-4 z-10 flex items-center gap-1 bg-[#0a0a0f]/60 backdrop-blur-xl rounded-2xl px-4 py-2 border border-white/5 shadow-2xl">
-        {breadcrumbs.map((bc, i) => (
-          <span key={i} className="flex items-center gap-1">
-            {i > 0 && <span className="text-slate-600 text-xs">›</span>}
-            <button
-              onClick={() => navigateTo(i)}
-              className={`text-xs px-2 py-1 rounded-lg transition-all
-                ${i === breadcrumbs.length - 1
-                  ? 'text-indigo-400 font-black bg-indigo-500/10'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
-            >
-              {bc.label}
-            </button>
-          </span>
-        ))}
+    <div className="w-full h-full relative overflow-hidden bg-black">
+
+      {/* 3D Context Badge */}
+      <div className="absolute top-32 left-8 z-10 flex items-center gap-2 bg-[#0a0a0f]/80 backdrop-blur-2xl rounded-2xl px-5 py-3 border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+        <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(99,102,241,0.8)]" />
+        <span className="text-[11px] font-mono font-bold text-slate-300 uppercase tracking-widest mr-2">WebGL Hardware Acceleration</span>
+        <span className="text-xs px-3 py-1.5 rounded-xl font-heading font-black text-indigo-400 bg-indigo-500/10 shadow-[0_0_10px_rgba(99,102,241,0.2)] border border-indigo-500/20">
+          Hold Right-Click to Tilt 3D View
+        </span>
       </div>
 
-      <canvas ref={canvasRef} className="w-full h-full" />
+      <DeckGL
+        initialViewState={INITIAL_VIEW_STATE}
+        controller={true}
+        layers={layers}
+        getCursor={({ isDragging, isHovering }) => (isDragging ? 'grabbing' : isHovering ? 'pointer' : 'grab')}
+      >
+        <MapGL
+          mapLib={maplibregl}
+          mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+          preventStyleDiffing={true}
+        />
+      </DeckGL>
 
-      {/* Tooltip */}
-      {tooltip && (
+      {/* Tooltip Overlay */}
+      {tooltipInfo && tooltipInfo.object && (
         <div
-          className="fixed z-50 bg-[#0a0a0f]/90 backdrop-blur-2xl rounded-2xl p-4 pointer-events-none max-w-xs border border-white/10 shadow-2xl"
-          style={{ left: tooltip.x + 16, top: tooltip.y - 16 }}
+          className="fixed z-[2000] bg-[#08080c]/95 backdrop-blur-3xl rounded-2xl p-5 pointer-events-none w-56 border border-white/10 shadow-[0_16px_40px_rgba(0,0,0,0.6)]"
+          style={{ left: tooltipInfo.x + 20, top: tooltipInfo.y - 20 }}
         >
-          {tooltip.type === 'node' ? (
-            <div>
-              <div className="text-xs text-[var(--color-text-muted)] mb-1">Node #{tooltip.id}</div>
-              <div className="grid grid-cols-5 gap-2 text-center">
-                {['S', 'E', 'I', 'R', 'D'].map((k) => (
-                  <div key={k}>
-                    <div className="text-[10px] text-[var(--color-text-muted)]">{k}</div>
-                    <div className="text-xs font-bold font-mono">
-                      {((tooltip.state?.[k] || 0) * 100).toFixed(1)}%
-                    </div>
+          <div className="flex justify-between items-end mb-3 pb-3 border-b border-white/10">
+            <div className="text-xs font-mono font-bold text-slate-400 uppercase tracking-widest">Node ID</div>
+            <div className="text-sm font-heading font-black text-indigo-400">#{tooltipInfo.object.id}</div>
+          </div>
+          <div className="grid grid-cols-5 gap-1 text-center">
+            {['S', 'E', 'I', 'R', 'D'].map((k) => {
+              const val = tooltipInfo.object.days?.[currentDay]?.[k] || 0;
+              return (
+                <div key={k}>
+                  <div className="text-[10px] text-slate-500 font-bold mb-1">{k}</div>
+                  <div className="text-[10px] font-black font-mono text-white">
+                    {(val * 100).toFixed(0)}%
                   </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div className="text-xs text-[var(--color-text-muted)] mb-1">
-                Cluster · {tooltip.count.toLocaleString()} nodes
-              </div>
-              <div className="grid grid-cols-5 gap-2 text-center">
-                {['S', 'E', 'I', 'R', 'D'].map((k) => (
-                  <div key={k}>
-                    <div className="text-[10px] text-[var(--color-text-muted)]">{k}</div>
-                    <div className="text-xs font-bold font-mono">
-                      {((tooltip.state?.[k] || 0) * 100).toFixed(1)}%
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="text-[10px] text-indigo-400 mt-1.5">Click to drill down →</div>
-            </div>
-          )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
+
+      {/* Legend Overlay */}
+      <div className="absolute bottom-8 right-8 z-10 bg-[#0a0a0f]/80 backdrop-blur-2xl rounded-2xl p-4 border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)] flex flex-col gap-2 pointer-events-none">
+        <div className="text-xs font-mono font-bold text-slate-400 uppercase tracking-widest mb-1 border-b border-white/10 pb-2">Node Status</div>
+        {Object.entries(STATE_NAMES).map(([key, name]) => (
+          <div key={key} className="flex items-center gap-3">
+            <div
+              className="w-3 h-3 rounded-full"
+              style={{
+                backgroundColor: STATE_HEX[key],
+                boxShadow: `0 0 10px ${STATE_HEX[key]}80`
+              }}
+            />
+            <span className="text-sm font-heading font-medium text-slate-300">{name}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

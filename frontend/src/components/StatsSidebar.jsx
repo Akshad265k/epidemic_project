@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../store';
 import { STATE_HEX, STATE_NAMES, STATE_LABELS } from '../utils/colors';
+import { motion } from 'framer-motion';
 
 export default function StatsSidebar() {
   const nodes = useStore((s) => s.nodes);
@@ -50,57 +51,84 @@ export default function StatsSidebar() {
 
   if (!stats) return null;
 
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: { staggerChildren: 0.1 }
+    }
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 10 },
+    show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
+  };
+
   return (
-    <div className="h-full w-full bg-[#0a0a0f]/40 backdrop-blur-3xl rounded-[40px] flex flex-col overflow-hidden border border-white/10 shadow-2xl">
+    <div className="h-full w-full flex flex-col">
       {/* Header */}
       <div className="p-6 border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-black text-white uppercase tracking-widest">
-            Population
+          <h3 className="text-sm font-heading font-black text-white uppercase tracking-widest text-glow">
+            Population Scope
           </h3>
-          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-indigo-500/10 rounded-full border border-indigo-500/20">
-            <div className="w-1 h-1 bg-indigo-400 rounded-full animate-pulse" />
-            <span className="text-[8px] font-black text-indigo-400 uppercase tracking-tighter">Live</span>
+          <div className="flex items-center gap-2 px-3 py-1 bg-indigo-500/10 rounded-full border border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.2)]">
+            <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full shadow-[0_0_8px_currentColor] animate-pulse" />
+            <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">Live</span>
           </div>
         </div>
-        <p className="text-xs text-slate-500 font-bold">
+        <p className="text-[11px] text-slate-400 font-bold font-mono">
           Day {currentDay + 1} · {stats.total.toLocaleString()} Nodes
         </p>
       </div>
 
       {/* SEIRD Cards */}
-      <div className="p-6 space-y-3 flex-1 overflow-y-auto scrollbar-hide">
+      <motion.div 
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+        className="p-6 space-y-4 flex-1 overflow-y-auto scrollbar-hide"
+      >
         {STATE_LABELS.map((key) => (
-          <div key={key} className="rounded-2xl p-4 bg-white/[0.03] border border-white/5 group hover:bg-white/[0.05] transition-all duration-300">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
+          <motion.div 
+            variants={itemVariants}
+            key={key} 
+            className="rounded-3xl p-5 bg-white/[0.02] border border-white/5 group hover:bg-white/[0.05] hover:border-white/10 transition-all duration-300 relative overflow-hidden"
+          >
+            {/* Subtle glow background */}
+            <div className="absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500 pointer-events-none" style={{ background: `radial-gradient(circle at 50% 50%, ${key === 'D' ? '#fff' : STATE_HEX[key]}, transparent 70%)` }} />
+
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="flex items-center gap-3">
                 <div className="w-2.5 h-2.5 rounded-full shadow-[0_0_8px_currentColor]" style={{ color: key === 'D' ? '#fff' : STATE_HEX[key], background: key === 'D' ? '#fff' : STATE_HEX[key] }} />
-                <span className="text-[10px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">{STATE_NAMES[key]}</span>
+                <span className="text-[11px] font-bold text-slate-300 uppercase tracking-widest">{STATE_NAMES[key]}</span>
               </div>
-              <span className="text-[10px] font-black font-mono text-slate-500">{stats.pcts[key]}%</span>
+              <span className="text-[11px] font-black font-mono text-slate-500">{stats.pcts[key]}%</span>
             </div>
-            <div className="text-2xl font-black font-mono tracking-tighter" style={{ color: key === 'D' ? '#fff' : STATE_HEX[key] }}>
+            
+            <div className="text-3xl font-heading font-black tracking-tighter relative z-10" style={{ color: key === 'D' ? '#fff' : STATE_HEX[key], textShadow: `0 0 20px ${key === 'D' ? 'rgba(255,255,255,0.4)' : STATE_HEX[key]}40` }}>
               {stats.counts[key].toLocaleString()}
             </div>
+            
             {/* Mini bar */}
-            <div className="mt-3 h-1 bg-white/5 rounded-full overflow-hidden">
+            <div className="mt-4 h-1.5 bg-black/40 rounded-full overflow-hidden border border-white/5 relative z-10">
               <div
-                className="h-full rounded-full transition-all duration-700 ease-out shadow-[0_0_8px_rgba(255,255,255,0.1)]"
-                style={{ width: `${stats.pcts[key]}%`, background: key === 'D' ? '#fff' : STATE_HEX[key] }}
+                className="h-full rounded-full transition-all duration-700 ease-out shadow-[0_0_10px_currentColor]"
+                style={{ width: `${stats.pcts[key]}%`, background: key === 'D' ? '#fff' : STATE_HEX[key], color: key === 'D' ? '#fff' : STATE_HEX[key] }}
               />
             </div>
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
 
       {/* Infection delta */}
-      <div className="p-6 border-t border-white/5 bg-[#0a0a0f]/60">
-        <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Daily Growth</div>
-        <div className="flex items-end gap-2">
-          <div className={`text-xl font-black font-mono leading-none ${stats.deltaI > 0 ? 'text-red-400' : stats.deltaI < 0 ? 'text-emerald-400' : 'text-indigo-400'}`}>
+      <div className="p-6 border-t border-white/5 bg-black/20 backdrop-blur-md">
+        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Daily Infection Growth</div>
+        <div className="flex items-end gap-3">
+          <div className={`text-2xl font-heading font-black tracking-tighter ${stats.deltaI > 0 ? 'text-rose-400 text-glow' : stats.deltaI < 0 ? 'text-emerald-400 text-glow' : 'text-indigo-400 text-glow'}`}>
             {stats.deltaI > 0 ? '↑' : stats.deltaI < 0 ? '↓' : ''}{Math.abs(stats.deltaI).toLocaleString()}
           </div>
-          <span className="text-[10px] text-slate-500 font-bold mb-0.5">/ 24h</span>
+          <span className="text-[11px] font-mono text-slate-500 font-bold mb-1">/ 24h</span>
         </div>
       </div>
     </div>
