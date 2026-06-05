@@ -18,8 +18,9 @@ from torchdiffeq import odeint
 # PATHS — adjust these to wherever your files live locally
 # ─────────────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join("model", "tgn_best.pt")
-GRAPHS_DIR = os.path.join("graphs")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+MODEL_PATH = os.path.join(PROJECT_ROOT, "model", "tgn_best.pt")
+GRAPHS_DIR = os.path.join(PROJECT_ROOT, "graphs")
 
 device = torch.device("cpu")
 
