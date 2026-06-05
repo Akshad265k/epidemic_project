@@ -10,38 +10,6 @@ export default function Timeline() {
   const playbackSpeed = useStore((s) => s.playbackSpeed);
   const setPlaybackSpeed = useStore((s) => s.setPlaybackSpeed);
   const nodes = useStore((s) => s.nodes);
-  const rafRef = useRef(null);
-  const lastTimeRef = useRef(null);
-  const fractionalDay = useRef(0);
-
-  useEffect(() => {
-    if (!isPlaying) {
-      lastTimeRef.current = null;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      return;
-    }
-    fractionalDay.current = currentDay;
-    const tick = (timestamp) => {
-      if (lastTimeRef.current === null) {
-        lastTimeRef.current = timestamp;
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      const dt = (timestamp - lastTimeRef.current) / 1000;
-      lastTimeRef.current = timestamp;
-      fractionalDay.current += dt * playbackSpeed;
-
-      if (fractionalDay.current >= 29) {
-        setCurrentDay(29);
-        useStore.getState().setIsPlaying(false);
-        return;
-      }
-      setCurrentDay(Math.floor(fractionalDay.current));
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isPlaying, playbackSpeed]);
 
   const aggregates = useRef([]);
   useEffect(() => {
@@ -74,10 +42,10 @@ export default function Timeline() {
   const speeds = [0.5, 1, 2, 4];
 
   return (
-    <div className="h-full w-full bg-[#0a0a0f]/40 backdrop-blur-3xl rounded-[40px] flex items-center px-10 gap-8 border border-white/10 shadow-2xl overflow-hidden relative">
+    <div className="h-full w-full glass-panel rounded-[32px] flex items-center px-10 gap-8 overflow-hidden relative">
       {/* Background Area Chart */}
-      <div className="absolute inset-x-10 inset-y-4 opacity-10 pointer-events-none">
-        <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 100 100">
+      <div className="absolute inset-x-10 inset-y-4 opacity-20 pointer-events-none">
+        <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 100 100" style={{ filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.5))' }}>
           {aggregates.current.length > 0 && ['D', 'R', 'I', 'E', 'S'].map((state) => {
             const pts = aggregates.current.map((a, i) => {
               const x = (i / 29) * 100;
@@ -97,6 +65,7 @@ export default function Timeline() {
                 key={state}
                 points={`${top} ${bottom}`}
                 fill={state === 'D' ? '#fff' : STATE_HEX[state]}
+                className="transition-all duration-300"
               />
             );
           })}
@@ -104,13 +73,15 @@ export default function Timeline() {
       </div>
 
       {/* Controls Group */}
-      <div className="flex items-center gap-4 z-10">
+      <div className="flex items-center gap-4 z-10 bg-black/20 p-2 rounded-2xl border border-white/5 backdrop-blur-md">
         <button
           onClick={togglePlay}
-          className="w-12 h-12 rounded-2xl bg-indigo-500 hover:bg-indigo-400 text-white flex items-center justify-center
-                     transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
+          className={`w-14 h-14 rounded-xl flex items-center justify-center transition-all duration-300 active:scale-95
+                     ${isPlaying 
+                       ? 'bg-white/10 text-white border border-white/20 shadow-[0_0_15px_rgba(255,255,255,0.1)]' 
+                       : 'bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.4)] border border-indigo-400/30'}`}
         >
-          <span className="text-xl">{isPlaying ? '⏸' : '▶'}</span>
+          <span className="text-2xl">{isPlaying ? '⏸' : '▶'}</span>
         </button>
 
         <button
@@ -118,54 +89,60 @@ export default function Timeline() {
             const idx = speeds.indexOf(playbackSpeed);
             setPlaybackSpeed(speeds[(idx + 1) % speeds.length]);
           }}
-          className="text-[10px] font-black px-3 py-2 rounded-xl bg-white/5 border border-white/5
-                     text-slate-400 hover:text-white hover:bg-white/10 transition-all uppercase tracking-tighter"
+          className="text-xs font-mono font-bold px-4 py-2.5 rounded-lg bg-white/5 border border-white/10
+                     text-slate-300 hover:text-white hover:bg-white/10 transition-all tracking-wider shadow-inner"
         >
           {playbackSpeed}x
         </button>
       </div>
 
       {/* Track */}
-      <div className="flex-1 relative h-12 cursor-pointer group z-10" onMouseDown={(e) => {
+      <div className="flex-1 relative h-16 cursor-pointer group z-10 flex items-center" onMouseDown={(e) => {
         handleScrub(e);
         const move = (ev) => handleScrub(ev);
         const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
         window.addEventListener('mousemove', move);
         window.addEventListener('mouseup', up);
       }}>
-        {/* Track line */}
-        <div className="absolute top-1/2 left-0 right-0 h-1.5 -translate-y-1/2 bg-white/5 rounded-full">
-          <div
-            className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-full transition-[width] duration-75 shadow-[0_0_12px_rgba(129,140,248,0.4)]"
-            style={{ width: `${(currentDay / 29) * 100}%` }}
-          />
+        {/* Track line (background) */}
+        <div className="absolute left-0 right-0 h-2 bg-black/40 rounded-full border border-white/5 shadow-inner" />
+        
+        {/* Active Track Fill */}
+        <div className="absolute left-0 h-2 rounded-full overflow-hidden pointer-events-none" style={{ width: `${(currentDay / 29) * 100}%` }}>
+          <div className="w-full h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 shadow-[0_0_15px_rgba(236,72,153,0.8)]" />
         </div>
 
         {/* Tick marks */}
         {[0, 5, 10, 15, 20, 25, 29].map((d) => (
-          <div key={d} className="absolute top-1/2 -translate-y-1/2" style={{ left: `${(d / 29) * 100}%` }}>
-            <div className="w-px h-3 bg-white/10 mx-auto" />
+          <div key={d} className="absolute pointer-events-none flex flex-col items-center" style={{ left: `${(d / 29) * 100}%` }}>
+            <div className="w-px h-2 bg-white/20 mb-1" />
+            <div className="text-[9px] font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity translate-y-2">{d+1}</div>
           </div>
         ))}
 
         {/* Playhead */}
         <div
-          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-[left] duration-75"
+          className="absolute -translate-x-1/2 pointer-events-none transition-[left] duration-75"
           style={{ left: `${(currentDay / 29) * 100}%` }}
         >
-          <div className="w-5 h-5 rounded-full bg-white shadow-xl group-hover:scale-125 transition-transform border-4 border-indigo-500" />
-          <div className="absolute -top-10 left-1/2 -translate-x-1/2
-                          bg-indigo-500 text-white text-[10px] font-black uppercase tracking-widest
-                          px-2 py-1 rounded-lg whitespace-nowrap shadow-2xl">
+          {/* Thumb */}
+          <div className="w-6 h-6 rounded-full bg-white shadow-[0_0_20px_rgba(255,255,255,0.6)] group-hover:scale-125 transition-transform border-4 border-indigo-500 flex items-center justify-center">
+             <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />
+          </div>
+          
+          {/* Tooltip */}
+          <div className="absolute -top-12 left-1/2 -translate-x-1/2
+                          bg-[#08080c] text-white text-[10px] font-mono font-bold uppercase tracking-widest
+                          px-3 py-1.5 rounded-lg whitespace-nowrap shadow-[0_0_15px_rgba(0,0,0,0.5)] border border-indigo-500/30 opacity-0 group-hover:opacity-100 transition-opacity group-hover:-translate-y-2">
             Day {currentDay + 1}
           </div>
         </div>
       </div>
 
       {/* Day display */}
-      <div className="text-right min-w-[80px] shrink-0 z-10">
-        <div className="text-3xl font-black font-mono leading-none text-white tracking-tighter">{currentDay + 1}</div>
-        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">/ 30 Days</div>
+      <div className="text-right min-w-[90px] shrink-0 z-10 bg-black/20 p-3 rounded-2xl border border-white/5 backdrop-blur-md">
+        <div className="text-4xl font-heading font-black leading-none text-white tracking-tighter text-glow">{currentDay + 1}</div>
+        <div className="text-[10px] text-indigo-400 font-mono font-bold uppercase tracking-[0.2em] mt-1">/ 30 Days</div>
       </div>
     </div>
   );

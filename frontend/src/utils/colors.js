@@ -69,6 +69,48 @@ export function getSeverityColor(value, alpha = 0.6) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * Get weather-style spectral color for heatmap.
+ * value: 0 (cold) → 1 (hot)
+ */
+export function getWeatherColor(value) {
+  const v = Math.max(0, Math.min(1, value));
+  
+  // Define key color stops for smooth interpolation
+  const stops = [
+    { pos: 0.0,  r: 59,  g: 130, b: 246, a: 0.1 },  // Blue
+    { pos: 0.2,  r: 34,  g: 211, b: 238, a: 0.4 },  // Cyan
+    { pos: 0.4,  r: 34,  g: 197, b: 94,  a: 0.6 },  // Green
+    { pos: 0.6,  r: 234, g: 179, b: 8,   a: 0.7 },  // Yellow
+    { pos: 0.8,  r: 239, g: 68,  b: 68,  a: 0.8 },  // Red
+    { pos: 1.0,  r: 255, g: 255, b: 255, a: 0.95 }  // White
+  ];
+
+  // Find the two stops between which the value falls
+  let lower = stops[0];
+  let upper = stops[stops.length - 1];
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (v >= stops[i].pos && v <= stops[i+1].pos) {
+      lower = stops[i];
+      upper = stops[i+1];
+      break;
+    }
+  }
+
+  // Calculate interpolation factor (0 to 1)
+  const range = upper.pos - lower.pos;
+  const t = range === 0 ? 0 : (v - lower.pos) / range;
+
+  // LERP between colors
+  const r = Math.round(lower.r + t * (upper.r - lower.r));
+  const g = Math.round(lower.g + t * (upper.g - lower.g));
+  const b = Math.round(lower.b + t * (upper.b - lower.b));
+  const a = (lower.a + t * (upper.a - lower.a)).toFixed(2);
+
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
 export const STATE_LABELS = ['S', 'E', 'I', 'R', 'D'];
 export const STATE_NAMES = {
   S: 'Susceptible', E: 'Exposed', I: 'Infected', R: 'Recovered', D: 'Dead'
